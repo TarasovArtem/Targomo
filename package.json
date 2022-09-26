@@ -4,7 +4,10 @@
   "description": "E2E Tests",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "cypress:open": "cypress open",
+    "chrome": "cypress run --spec 'cypress/e2e/**' --headless --browser chrome",
+    "firefox": "cypress run --spec 'cypress/e2e/**' --headless --browser firefox",
+    "edge": "cypress run --spec 'cypress/e2e/**' --headless --browser edge"
   },
   "repository": {
     "type": "git",
