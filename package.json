@@ -1,0 +1,22 @@
+{
+  "name": "targomo-1",
+  "version": "1.0.0",
+  "description": "E2E Tests",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TarasovArtem/Targomo.git"
+  },
+  "author": "Artem Tarasov",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/TarasovArtem/Targomo/issues"
+  },
+  "homepage": "https://github.com/TarasovArtem/Targomo#readme",
+  "devDependencies": {
+    "cypress": "^10.8.0"
+  }
+}
