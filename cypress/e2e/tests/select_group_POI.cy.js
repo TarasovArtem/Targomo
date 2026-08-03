@@ -11,14 +11,14 @@ describe('Select any group of POIs from the tree component and then see them vis
     })
 
     it('should select Gastronomy group of POIs from the tree component', () => {
-       categories.getGastronomy().click();
-       map.getmap().invoke('show').screenshot({timeout: 10000});
+       categories.getGastronomy().click().should('be.checked');
+       map.getMap().should('be.visible').screenshot({timeout: 10000});
     })
 
     it('should select sub categories Gastronomy group as restaurants of POIs from the tree component', () => {
-       subCategories.getSelectBtnSubCategory(2).click(); 
-       subCategories.getRestaurant().click();
-       map.getmap().invoke('show').screenshot({timeout: 10000});
+       subCategories.getGastronomyExpandButton().click();
+       subCategories.getRestaurant().click().should('be.checked');
+       map.getMap().should('be.visible').screenshot({timeout: 10000});
      })
 
 

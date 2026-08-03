@@ -2,7 +2,7 @@
 
 export class Map {
 
-    getmap() {
+    getMap() {
         return cy.get('.map-container');
     }
 }
