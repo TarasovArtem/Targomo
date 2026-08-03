@@ -17,7 +17,7 @@
 
     git clone https://github.com/TarasovArtem/Targomo.git
 
-    cd Torgomo
+    cd Targomo
 
     npm install
 
