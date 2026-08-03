@@ -20,6 +20,6 @@
   },
   "homepage": "https://github.com/TarasovArtem/Targomo#readme",
   "devDependencies": {
-    "cypress": "^10.8.0"
+    "cypress": "^15.19.0"
   }
 }
