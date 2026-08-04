@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "cypress:open": "cypress open",
+    "test:e2e": "cypress run",
     "chrome": "cypress run --spec 'cypress/e2e/**' --headless --browser chrome",
     "firefox": "cypress run --spec 'cypress/e2e/**' --headless --browser firefox",
     "edge": "cypress run --spec 'cypress/e2e/**' --headless --browser edge"
