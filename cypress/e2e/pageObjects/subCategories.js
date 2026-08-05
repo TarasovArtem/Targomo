@@ -2,24 +2,23 @@
 
 export class SubCategories {
 
-    getSelectBtnSubCategory(num) {
-        return cy.get('.mat-icon-button').eq(num);
-    }
-
+    // Scoped to the tree node containing the "Gastronomy" label, so the
+    // toggle button is found by its category rather than by a hardcoded
+    // position among every .mat-icon-button on the page.
     getGastronomyExpandButton() {
-        return this.getSelectBtnSubCategory(2);
+        return cy.contains('mat-tree-node', 'Gastronomy').find('button[mattreenodetoggle]');
     }
 
     getFastFood() {
-        return cy.get('#mat-checkbox-11');
+        return cy.contains('mat-checkbox', 'Fast food');
     }
 
     getFoodCourt() {
-        return cy.get('#mat-checkbox-12');
+        return cy.contains('mat-checkbox', 'Food court');
     }
 
     getRestaurant() {
-        return cy.get('#mat-checkbox-13');
+        return cy.contains('mat-checkbox', 'Restaurant');
     }
 
 }
