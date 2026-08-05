@@ -8,5 +8,9 @@ export class Categories {
         return cy.contains('mat-checkbox', 'Gastronomy');
     }
 
+    getShopping() {
+        return cy.contains('mat-checkbox', 'Shopping');
+    }
+
 }
 export const categories = new Categories();
