@@ -15,7 +15,7 @@
     "url": "git+https://github.com/TarasovArtem/Targomo.git"
   },
   "author": "Artem Tarasov",
-  "license": "ISC",
+  "license": "MIT",
   "bugs": {
     "url": "https://github.com/TarasovArtem/Targomo/issues"
   },

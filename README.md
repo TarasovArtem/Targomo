@@ -4,6 +4,8 @@
 
 #### Description
 
+Cypress E2E test suite for the [Targomo](https://poi.targomo.com) POI (points of interest) map application. A Playwright + TypeScript port of this same suite, with the same scenarios and Page Object Model, lives at [TarasovArtem/TargomoPlaywright](https://github.com/TarasovArtem/TargomoPlaywright).
+
 ##### Test Case 1: 
 
     Select Gastronomy group of POIs from the tree component
@@ -49,6 +51,8 @@ or, without picking a browser (uses Cypress's default):
 #### Test files structure
 
     ./cypress/e2e/tests/select_group_POI.cy.js
+    ./cypress/e2e/tests/category_tree_behavior.cy.js
+    ./cypress/e2e/tests/poi_data_requests.cy.js
 
 
 #### Project Object files structure
