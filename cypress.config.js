@@ -6,5 +6,8 @@ module.exports = defineConfig({
     viewportWidth: 1280,
     viewportHeight: 720,
     defaultCommandTimeout: 10000,
+    // Cypress.env() isn't used anywhere in this suite; disabling this
+    // also silences the insecure-default warning printed on every run.
+    allowCypressEnv: false,
   },
 });
