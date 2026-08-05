@@ -41,6 +41,10 @@ or
 
     npm run edge
 
+or, without picking a browser (uses Cypress's default):
+
+    npm run test:e2e
+
 
 #### Test files structure
 
