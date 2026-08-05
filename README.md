@@ -6,13 +6,7 @@
 
 Cypress E2E test suite for the [Targomo](https://poi.targomo.com) POI (points of interest) map application. A Playwright + TypeScript port of this same suite, with the same scenarios and Page Object Model, lives at [TarasovArtem/TargomoPlaywright](https://github.com/TarasovArtem/TargomoPlaywright).
 
-##### Test Case 1: 
-
-    Select Gastronomy group of POIs from the tree component
-
-##### Test 2: 
-
-    Select sub categories Gastronomy group as Restaurant of POIs from the tree component
+See [TEST_CASES.md](TEST_CASES.md) for the full list of test cases covered by this suite, with preconditions, steps, and expected results for each.
 
 
 ### Commands for running tests and files structure
