@@ -9,10 +9,15 @@ on:
       - main
   workflow_dispatch:
 
-# Read-only by default. The AI analysis step only calls the OpenAI API and
-# writes local files - it needs no repo/PR/issue write access.
+# Minimal permissions for what this workflow actually does: read the repo,
+# and post/update a PR comment with the AI analysis. Nothing here needs
+# issues, actions, checks, or any other write scope. For pull_request runs
+# triggered by a fork, GitHub forces GITHUB_TOKEN to read-only regardless of
+# what's declared here - see the "AI failure analysis"/"Comment AI analysis
+# on PR" steps below for how that's handled.
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   cypress-tests:
@@ -78,6 +83,144 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: npm run ai:analyze
+
+      # Only ever runs for pull_request (never push/workflow_dispatch, where
+      # there is no PR to comment on) and only once tests have failed.
+      #
+      # Fork PRs: custom secrets (OPENAI_API_KEY) are not passed to runs
+      # triggered by a pull_request from a forked repository, so the step
+      # above will have failed to produce reports/ai/ai-report.json - this
+      # step detects that and skips (see format-pr-comment.js's caller
+      # below), rather than posting an empty/broken comment. Separately,
+      # GitHub also forces GITHUB_TOKEN to read-only for fork-triggered
+      # pull_request runs regardless of the `permissions:` block above, so
+      # even if a report did exist, the comment API call would 403 - that
+      # is caught and logged as a warning, not a job failure. Intentionally
+      # not switching to pull_request_target to work around either of
+      # these: that trigger runs workflow code from the base branch against
+      # the fork's PR content, which is a materially different trust
+      # boundary and out of scope for this change.
+      - name: Comment AI analysis on PR
+        if: steps.run_tests.outcome == 'failure' && github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/github-script@v9
+        env:
+          TEST_BROWSER: ${{ matrix.browser }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const reportPath = path.join(process.env.GITHUB_WORKSPACE, 'reports', 'ai', 'ai-report.json');
+            if (!fs.existsSync(reportPath)) {
+              core.notice('No reports/ai/ai-report.json (AI analysis did not produce output - e.g. no OPENAI_API_KEY on a fork PR, or the OpenAI call failed) - skipping PR comment.');
+              return;
+            }
+
+            let report;
+            try {
+              report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+            } catch (err) {
+              core.warning(`Could not parse ai-report.json: ${err.message}`);
+              return;
+            }
+
+            if (!Array.isArray(report.results) || report.results.length === 0) {
+              core.notice('ai-report.json has no results - skipping PR comment.');
+              return;
+            }
+
+            const prNumber = context.payload.pull_request && context.payload.pull_request.number;
+            if (!prNumber) {
+              core.notice('No pull_request number in the event payload - skipping PR comment.');
+              return;
+            }
+
+            const { formatComment, MARKER } = require(
+              path.join(process.env.GITHUB_WORKSPACE, 'scripts', 'ai', 'format-pr-comment.js')
+            );
+            const { upsertPrComment } = require(
+              path.join(process.env.GITHUB_WORKSPACE, 'scripts', 'ai', 'pr-comment-client.js')
+            );
+            const browser = process.env.TEST_BROWSER || 'unknown';
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const body = formatComment({ browser, report, runUrl });
+            const marker = MARKER(browser);
+
+            try {
+              // One comment per browser/job, identified by its hidden marker,
+              // updated in place on retry instead of piling up new comments.
+              const result = await upsertPrComment({
+                github,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issueNumber: prNumber,
+                marker,
+                body,
+              });
+              core.notice(`${result.action === 'created' ? 'Created' : 'Updated'} QA Agent comment for ${browser} (id ${result.id}).`);
+            } catch (err) {
+              // Most likely a fork PR, where GITHUB_TOKEN is forced
+              // read-only - not a reason to fail the job.
+              core.warning(`Could not post/update the PR comment: ${err.message}`);
+            }
+
+      # Mirror image of the step above: once a browser that previously
+      # failed (and got a QA Agent comment) starts passing again, replace
+      # that comment with a short "resolved" note instead of leaving a
+      # stale failure analysis on the PR forever. Only touches a comment
+      # that already exists for this browser - a PR that never failed gets
+      # no comment at all, from either step.
+      - name: Resolve QA Agent comment on PR
+        if: steps.run_tests.outcome == 'success' && github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/github-script@v9
+        env:
+          TEST_BROWSER: ${{ matrix.browser }}
+        with:
+          script: |
+            const path = require('path');
+
+            const prNumber = context.payload.pull_request && context.payload.pull_request.number;
+            if (!prNumber) {
+              return;
+            }
+
+            const { formatResolvedComment, MARKER } = require(
+              path.join(process.env.GITHUB_WORKSPACE, 'scripts', 'ai', 'format-pr-comment.js')
+            );
+            const { findMarkedComment } = require(
+              path.join(process.env.GITHUB_WORKSPACE, 'scripts', 'ai', 'pr-comment-client.js')
+            );
+            const browser = process.env.TEST_BROWSER || 'unknown';
+            const marker = MARKER(browser);
+
+            try {
+              const existing = await findMarkedComment({
+                github,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issueNumber: prNumber,
+                marker,
+              });
+              if (!existing) {
+                return; // this browser never failed on this PR - nothing to resolve
+              }
+
+              const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+              const body = formatResolvedComment({ browser, runUrl });
+              // Already have the comment id from the lookup above - update it
+              // directly rather than re-searching via upsertPrComment.
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+              core.notice(`Marked QA Agent comment for ${browser} as resolved (id ${existing.id}).`);
+            } catch (err) {
+              core.warning(`Could not resolve the PR comment: ${err.message}`);
+            }
 
       - name: Upload Cypress screenshots
         if: steps.run_tests.outcome == 'failure'

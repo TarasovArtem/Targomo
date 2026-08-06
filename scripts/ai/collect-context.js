@@ -139,6 +139,10 @@ function* walkSuite(suite, ancestorTitles) {
   }
 }
 
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function resolveScreenshotPath(specFile, suiteTitles, testTitle) {
   if (!specFile) return null;
   try {
@@ -146,10 +150,21 @@ function resolveScreenshotPath(specFile, suiteTitles, testTitle) {
     if (!fs.existsSync(specDir)) return null;
 
     const baseName = [...suiteTitles, testTitle].join(" -- ");
-    const candidates = fs.readdirSync(specDir).filter((f) => f.startsWith(baseName));
-    // Cypress may save multiple attempts, e.g. "... (failed).png", "... (1).png".
-    const failedShot = candidates.find((f) => f.includes("(failed)")) || candidates[0];
-    if (!failedShot) return null;
+    // Cypress's own on-failure screenshot filename is exactly
+    // "<suite -- test> (failed).png", optionally suffixed with an attempt
+    // number when retries are enabled (not the case in this repo's config,
+    // but handled defensively): "<suite -- test> (failed) (2).png". Only
+    // ever return a file we can pin down as *this* failed test's own
+    // screenshot - a loose prefix match could otherwise pick up an
+    // unrelated screenshot whose title happens to start the same way, or
+    // (worse) a screenshot from a test that didn't actually fail.
+    const failedPattern = new RegExp(`^${escapeRegExp(baseName)} \\(failed\\)( \\(\\d+\\))?\\.png$`);
+    const candidates = fs.readdirSync(specDir).filter((f) => failedPattern.test(f));
+    if (candidates.length === 0) return null;
+
+    // With multiple attempts, the highest-numbered one is the most recent.
+    candidates.sort();
+    const failedShot = candidates[candidates.length - 1];
 
     return normalizeSpecPath(path.join(specDir, failedShot));
   } catch {
@@ -354,4 +369,21 @@ function main() {
   }
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = {
+  normalizeSpecPath,
+  loadReports,
+  walkSuite,
+  resolveScreenshotPath,
+  extractFailedTests,
+  summarizeTestResults,
+  isPathAllowed,
+  readFileSafe,
+  resolveLocalImports,
+  buildRelevantFiles,
+  getMetadata,
+  main,
+};

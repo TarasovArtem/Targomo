@@ -9,9 +9,9 @@
     "chrome": "cypress run --spec 'cypress/e2e/**' --headless --browser chrome",
     "firefox": "cypress run --spec 'cypress/e2e/**' --headless --browser firefox",
     "edge": "cypress run --spec 'cypress/e2e/**' --headless --browser edge",
-    "report:merge": "mochawesome-merge reports/cypress/*.json > reports/cypress/report.json",
     "ai:collect": "node scripts/ai/collect-context.js",
-    "ai:analyze": "node scripts/ai/analyze-failure.js"
+    "ai:analyze": "node scripts/ai/analyze-failure.js",
+    "test:unit": "node --test scripts/ai/*.test.js"
   },
   "repository": {
     "type": "git",
@@ -26,7 +26,6 @@
   "devDependencies": {
     "cypress": "^15.19.0",
     "mochawesome": "^8.0.1",
-    "mochawesome-merge": "^5.1.1",
     "openai": "^7.4.0"
   }
 }
