@@ -289,3 +289,33 @@ test("readHistory: strips internal bookkeeping fields, keeping only the compact 
 
   assert.deepEqual(readHistory(), { runsConsidered: 10, passes: 7, failures: 3, retryPasses: 2 });
 });
+
+test("buildPausedReport: one honest UNKNOWN/confidence-0 stub per failed test, no model call implied", () => {
+  const { buildPausedReport, validateAnalysisItem } = require("./analyze-failure");
+  const report = buildPausedReport(context, context.failedTests);
+
+  assert.equal(report.model, null, "no model was actually called");
+  assert.equal(report.usage, null);
+  assert.equal(report.results.length, context.failedTests.length);
+
+  const [result] = report.results;
+  assert.equal(result.test.title, context.failedTests[0].title);
+  assert.equal(result.classification, "UNKNOWN");
+  assert.equal(result.confidence, 0);
+  assert.equal(result.recommendedFix, null);
+  assert.equal(result.shouldCreateBug, false);
+  assert.equal(result.shouldRetry, false);
+  assert.deepEqual(result.evidence, [], "must never fabricate evidence for a stub result");
+
+  // The stub must satisfy the exact same contract a real model response
+  // does - it flows through the untouched PR-comment/artifact pipeline.
+  assert.deepEqual(validateAnalysisItem(result, 0), []);
+});
+
+test("buildPausedReport: the note explains *why* in a way a human reading the PR comment or artifact can act on", () => {
+  const { buildPausedReport } = require("./analyze-failure");
+  const report = buildPausedReport(context, context.failedTests);
+  assert.match(report.note, /paused/i);
+  assert.match(report.note, /GitHub Models/);
+  assert.match(report.note, /retired/i);
+});

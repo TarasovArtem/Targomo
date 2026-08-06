@@ -76,6 +76,8 @@ The pipeline:
 
 ### QA Agent (AI failure analysis)
 
+> **AI analysis is currently paused.** GitHub Models was [fully retired by GitHub on 2026-07-30](https://github.blog/changelog/2026-07-30-github-models-is-now-retired/) - confirmed live, its inference API now returns `410 Gone` for every request. `scripts/ai/analyze-failure.js` detects this (`PROVIDER_PAUSED_REASON` in [scripts/ai/config.js](scripts/ai/config.js)) and short-circuits before making any network call, writing an honest `UNKNOWN`/0%-confidence stub result instead - visible in the artifact and PR comment - rather than silently failing or retrying a dead endpoint. Everything else below (context collection, flaky-history, artifacts, PR comments) still runs normally; only the actual model call is stopped, pending a replacement provider.
+
 When an E2E job fails, a QA Agent step analyzes the failure and classifies it as `PRODUCT_BUG`, `TEST_BUG`, `FLAKY_TEST`, `ENVIRONMENT`, `EXTERNAL_DEPENDENCY`, or `UNKNOWN`, before recommending a fix. It never changes whether the job passes or fails - it's a diagnostic layer on top of the real test result, not a gate.
 
 ```
@@ -109,14 +111,14 @@ permissions:
   models: read
 ```
 
-GitHub Models usage limits still apply per GitHub's own rate limits for the token/account running the workflow - the AI step retries a bounded number of times on rate-limit/server errors and otherwise fails gracefully without affecting the E2E test result.
+The transport code (`callGitHubModels` in `analyze-failure.js`) is intentionally left in place and tested against a mocked `fetch` - reactivating AI analysis with a replacement provider should only require updating `GITHUB_MODELS_ENDPOINT`/`PROVIDER_PAUSED_REASON` in `scripts/ai/config.js` (and the request/response shape in `callGitHubModels` if the new provider isn't Chat-Completions-compatible), not rebuilding the pipeline around it.
 
 Run it locally:
 
 ```
-npm run chrome              # produces reports/cypress/*.json
-npm run ai:collect           # produces reports/ai/context.json
-GITHUB_TOKEN=<your token> npm run ai:analyze   # produces reports/ai/ai-report.json
+npm run chrome        # produces reports/cypress/*.json
+npm run ai:collect     # produces reports/ai/context.json
+npm run ai:analyze     # produces reports/ai/ai-report.json (currently a paused-provider stub, no token needed)
 ```
 
-`AI_MODEL` can be set to any [GitHub Models catalog id](https://github.com/marketplace/models) (default: `openai/gpt-4o`) without touching source code - see [scripts/ai/config.js](scripts/ai/config.js).
+`AI_MODEL` can be set to any provider-specific model id without touching source code - see [scripts/ai/config.js](scripts/ai/config.js).
