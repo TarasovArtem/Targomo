@@ -16,8 +16,12 @@ jobs:
     # cypress/included bundles Node, npm and matching pre-installed browser
     # binaries for the same Cypress version declared in package.json, so no
     # separate Node setup or binary caching step is needed.
+    # Pinned to 14.x: Cypress 15.19.0 paired with the Firefox build in that
+    # tag hits a reproducible upstream WebDriver BiDi launch bug in this
+    # containerized setup ("browser never connected" /
+    # "Cannot read properties of undefined (reading 'browsingContextGetTree')").
     container:
-      image: cypress/included:15.19.0
+      image: cypress/included:14.5.4
       options: --shm-size=1gb
     strategy:
       fail-fast: false
@@ -34,20 +38,7 @@ jobs:
       # baseUrl in cypress.config.js points at the externally hosted app,
       # so there is nothing to build or serve locally before running tests.
       - name: Run Cypress E2E tests (${{ matrix.browser }})
-        if: matrix.browser != 'firefox'
         run: npm run ${{ matrix.browser }}
-
-      # Firefox intermittently fails to connect to Cypress over WebDriver
-      # BiDi in this containerized setup ("browser never connected" /
-      # cypress-io/cypress issues around Firefox BiDi launch flakiness),
-      # unrelated to this repo's config. Retry to absorb that flakiness.
-      - name: Run Cypress E2E tests (firefox, with retry)
-        if: matrix.browser == 'firefox'
-        uses: nick-fields/retry@v4
-        with:
-          max_attempts: 3
-          timeout_minutes: 5
-          command: npm run firefox
 
       - name: Upload Cypress screenshots
         if: failure()
