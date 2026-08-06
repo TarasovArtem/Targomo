@@ -10,13 +10,17 @@ on:
   workflow_dispatch:
 
 # Minimal permissions for what this workflow actually does: read the repo,
+# read past workflow run/job history for flaky-test signal (actions: read),
 # and post/update a PR comment with the AI analysis. Nothing here needs
-# issues, actions, checks, or any other write scope. For pull_request runs
-# triggered by a fork, GitHub forces GITHUB_TOKEN to read-only regardless of
-# what's declared here - see the "AI failure analysis"/"Comment AI analysis
-# on PR" steps below for how that's handled.
+# issues, checks, or any other write scope. For pull_request runs triggered
+# by a fork, GitHub forces GITHUB_TOKEN to read-only regardless of what's
+# declared here - see the "AI failure analysis"/"Comment AI analysis on PR"
+# steps below for how that's handled. actions: read is unaffected by that
+# downgrade (it's already read-only), so history collection works the same
+# for forked and same-repo PRs alike.
 permissions:
   contents: read
+  actions: read
   pull-requests: write
 
 jobs:
@@ -72,6 +76,21 @@ jobs:
         env:
           TEST_BROWSER: ${{ matrix.browser }}
         run: npm run ai:collect
+
+      # Best-effort flaky-test signal: aggregated pass/fail counts for this
+      # browser's job over its last 10 completed runs on main (GitHub
+      # Actions run/job history via the API - no artifact downloads, no
+      # external database). GITHUB_TOKEN is the default per-run token, not
+      # a custom secret, so this runs the same for fork and same-repo PRs.
+      # Entirely optional: any failure here (first-ever run, rate limit,
+      # API error) writes { available: false } and this step still
+      # succeeds - "AI failure analysis" below works with or without it.
+      - name: Collect run history for flaky-test reasoning
+        if: steps.run_tests.outcome == 'failure'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TEST_BROWSER: ${{ matrix.browser }}
+        run: npm run ai:history
 
       # AI analysis is informational only. It never runs when tests pass,
       # and continue-on-error here means an OpenAI outage/invalid key can't

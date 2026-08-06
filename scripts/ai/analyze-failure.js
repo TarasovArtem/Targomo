@@ -23,6 +23,7 @@ const { CLASSIFICATIONS, buildSystemPrompt, buildUserPrompt, RESPONSE_SCHEMA } =
 
 const ROOT = path.resolve(__dirname, "..", "..");
 const CONTEXT_FILE = path.join(ROOT, "reports", "ai", "context.json");
+const HISTORY_FILE = path.join(ROOT, "reports", "ai", "history.json");
 const OUTPUT_FILE = path.join(ROOT, "reports", "ai", "ai-report.json");
 
 // Single source of truth for the model name - do not reference a model
@@ -51,6 +52,31 @@ function readContext() {
   } catch (err) {
     throw new AnalyzerError(`${path.relative(ROOT, CONTEXT_FILE)} is not valid JSON: ${err.message}`);
   }
+}
+
+// Optional by design (see collect-history.js): missing file, unparseable
+// JSON, or an { available: false } marker all just mean "no history" -
+// never an error. Only the compact aggregate counts are kept; internal
+// bookkeeping fields (available/reason/branch/generatedAt) aren't sent to
+// the model.
+function readHistory() {
+  if (!fs.existsSync(HISTORY_FILE)) return null;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(HISTORY_FILE, "utf8"));
+  } catch {
+    return null;
+  }
+
+  if (!parsed || parsed.available !== true) return null;
+
+  return {
+    runsConsidered: parsed.runsConsidered ?? null,
+    passes: parsed.passes ?? null,
+    failures: parsed.failures ?? null,
+    retryPasses: parsed.retryPasses ?? null,
+  };
 }
 
 function requireApiKey() {
@@ -242,6 +268,7 @@ async function main() {
       generatedAt: new Date().toISOString(),
       model: MODEL,
       sourceContext: pickSourceContext(context),
+      history: null,
       results: [],
       warnings: [],
       note: "No failed tests were present in reports/ai/context.json; nothing to analyze.",
@@ -258,6 +285,12 @@ async function main() {
     fail(err.message);
     return;
   }
+
+  // Optional flaky-test signal (see collect-history.js). Attached onto the
+  // same context object buildUserPrompt already reads from, so a missing
+  // reports/ai/history.json changes nothing else about this run.
+  const history = readHistory();
+  if (history) context.history = history;
 
   let results, usage;
   try {
@@ -293,6 +326,10 @@ async function main() {
     generatedAt: new Date().toISOString(),
     model: MODEL,
     sourceContext: pickSourceContext(context),
+    // Same compact counts the model saw, kept on the report for
+    // traceability - not the raw per-run data (there isn't any to keep;
+    // collect-history.js never persists more than these aggregates).
+    history,
     usage: usage
       ? {
           promptTokens: usage.prompt_tokens ?? null,
@@ -321,5 +358,6 @@ module.exports = {
   recommendsArbitraryWait,
   isRetryableError,
   pickSourceContext,
+  readHistory,
   MODEL,
 };
