@@ -14,6 +14,8 @@ const {
   loadReports,
   buildRelevantFiles,
   getMetadata,
+  truncateText,
+  KNOWN_PROJECT_CONSTRAINTS,
 } = require("./collect-context");
 
 const ROOT = path.resolve(__dirname, "..", "..");
@@ -209,4 +211,52 @@ test("getMetadata: TEST_BROWSER takes priority over BROWSER/CYPRESS_BROWSER", (t
   const meta = getMetadata();
   assert.equal(meta.browser, "firefox");
   assert.equal(meta.ci, true);
+});
+
+test("truncateText: leaves short text untouched", () => {
+  assert.equal(truncateText("short", 100), "short");
+});
+
+test("truncateText: caps long text with a visible marker", () => {
+  const long = "x".repeat(200);
+  const result = truncateText(long, 50);
+  assert.equal(result.startsWith("x".repeat(50)), true);
+  assert.match(result, /truncated/);
+  assert.ok(result.length < long.length);
+});
+
+test("truncateText: passes through non-string input unchanged (e.g. null)", () => {
+  assert.equal(truncateText(null, 50), null);
+});
+
+test("extractFailedTests: truncates a very long stack trace but never the error message itself", () => {
+  const hugeStack = "at frame\n".repeat(2000); // well over MAX_STACK_CHARS
+  const criticalMessage = "AssertionError: this exact sentence must survive untouched";
+  const reports = [
+    {
+      results: [
+        {
+          file: "/cypress/e2e/tests/x.cy.js",
+          suites: [
+            {
+              title: "Suite",
+              suites: [],
+              tests: [{ title: "fails", state: "failed", duration: 1, err: { message: criticalMessage, estack: hugeStack } }],
+            },
+          ],
+        },
+      ],
+    },
+  ];
+
+  const [failed] = extractFailedTests(reports);
+  assert.equal(failed.error.message, criticalMessage, "the message must never be truncated");
+  assert.ok(failed.error.stack.length < hugeStack.length, "the stack must be truncated");
+  assert.match(failed.error.stack, /truncated/);
+});
+
+test("KNOWN_PROJECT_CONSTRAINTS: is a non-empty list of plain strings (no secrets/tokens)", () => {
+  assert.ok(Array.isArray(KNOWN_PROJECT_CONSTRAINTS));
+  assert.ok(KNOWN_PROJECT_CONSTRAINTS.length > 0);
+  KNOWN_PROJECT_CONSTRAINTS.forEach((entry) => assert.equal(typeof entry, "string"));
 });

@@ -25,6 +25,20 @@ const SCREENSHOTS_DIR = path.join(ROOT, "cypress", "screenshots");
 // Keeps the collected context small and safe to hand to an LLM later.
 const MAX_FILE_BYTES = 20 * 1024;
 const MAX_TOTAL_RELEVANT_BYTES = 150 * 1024;
+// Stack traces can run very long (deep call chains, webpack-wrapped
+// frames); the error *message* is the critical, never-truncated part -
+// only the trailing stack lines are capped.
+const MAX_STACK_CHARS = 4000;
+
+// Short, static facts about this repo's known engineering limitations,
+// surfaced to the QA Agent as background context (never as a
+// classification shortcut - see qa-agent-prompt.js rule 9). Kept as a
+// plain list here rather than scattered if-statements in JS, so adding a
+// new known issue is a one-line change, not new branching logic.
+const KNOWN_PROJECT_CONSTRAINTS = [
+  "Firefox is intentionally excluded from this CI workflow's browser matrix (chrome, edge only) due to a known Firefox-in-nested-Docker WebDriver launch/hang issue in this container setup, unrelated to the application or test code. It is not evidence of a browser-specific product bug.",
+  "The application under test (poi.targomo.com) is a live, externally hosted third-party service outside this repository's control - it has no staging/mocked environment, so failures can reflect real upstream instability, not just this repo's code.",
+];
 
 // Only files under these repo-relative roots (or exactly matching one of
 // the extra allowed paths) are ever read into relevantFiles, even if an
@@ -172,6 +186,14 @@ function resolveScreenshotPath(specFile, suiteTitles, testTitle) {
   }
 }
 
+// Centralized truncation helper (see MAX_STACK_CHARS) - never applied to
+// the error message itself, only to fields that can legitimately be huge
+// without losing the actually-critical information at the start.
+function truncateText(text, maxChars) {
+  if (typeof text !== "string") return text;
+  return text.length > maxChars ? `${text.slice(0, maxChars)}\n/* ...truncated... */` : text;
+}
+
 function extractFailedTests(reports) {
   const failedTests = [];
 
@@ -191,8 +213,9 @@ function extractFailedTests(reports) {
           status: "failed",
           duration: typeof test.duration === "number" ? test.duration : null,
           error: {
+            // Never truncated: the message is the critical part.
             message: (test.err && test.err.message) || null,
-            stack: (test.err && (test.err.estack || test.err.stack)) || null,
+            stack: truncateText((test.err && (test.err.estack || test.err.stack)) || null, MAX_STACK_CHARS),
           },
           screenshot: resolveScreenshotPath(specFile, suiteTitles, test.title || ""),
         });
@@ -340,12 +363,14 @@ function main() {
   let testResults = { found: false };
   let failedTests = [];
   let relevantFiles = {};
+  let knownProjectConstraints = [];
 
   if (reports.length > 0) {
     testResults = summarizeTestResults(reports);
     failedTests = extractFailedTests(reports);
     if (failedTests.length > 0) {
       relevantFiles = buildRelevantFiles(failedTests, warnings);
+      knownProjectConstraints = KNOWN_PROJECT_CONSTRAINTS;
     }
   }
 
@@ -355,6 +380,7 @@ function main() {
     testResults,
     failedTests,
     relevantFiles,
+    knownProjectConstraints,
     warnings,
   };
 
@@ -385,5 +411,7 @@ module.exports = {
   resolveLocalImports,
   buildRelevantFiles,
   getMetadata,
+  truncateText,
+  KNOWN_PROJECT_CONSTRAINTS,
   main,
 };

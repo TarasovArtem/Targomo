@@ -45,7 +45,7 @@ const DEFAULT_BRANCH = "main";
 // to turn one CI step into hundreds of requests.
 const MAX_RUNS = 30;
 
-// Same retry policy as analyze-failure.js's OpenAI call, for the same
+// Same retry policy as analyze-failure.js's GitHub Models call, for the same
 // reason: rate limiting and gateway/server errors are worth one or two
 // quick retries, but a 401/403/404 will just fail identically again.
 const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504]);

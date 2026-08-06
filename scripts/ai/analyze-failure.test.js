@@ -4,7 +4,14 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { callOpenAI, validateAnalysisItem, recommendsArbitraryWait, isRetryableError, readHistory } = require("./analyze-failure");
+const {
+  callGitHubModels,
+  validateAnalysisItem,
+  recommendsArbitraryWait,
+  isRetryableStatus,
+  stripCodeFences,
+  readHistory,
+} = require("./analyze-failure");
 
 const ROOT = path.resolve(__dirname, "..", "..");
 const HISTORY_FILE = path.join(ROOT, "reports", "ai", "history.json");
@@ -42,50 +49,81 @@ function goodItem(overrides = {}) {
   };
 }
 
-function fakeClientReturning(resultsPayload, usage) {
-  return {
-    chat: {
-      completions: {
-        create: async () => ({
-          choices: [{ message: { content: JSON.stringify({ results: resultsPayload }) } }],
-          usage: usage || { prompt_tokens: 100, completion_tokens: 40, total_tokens: 140 },
-        }),
+// Fakes global fetch's Response shape just enough for callGitHubModels.
+function fakeResponse({ ok = true, status = 200, statusText = "OK", body }) {
+  return { ok, status, statusText, json: async () => body };
+}
+
+function fetchReturning(resultsPayload, usage) {
+  return async () =>
+    fakeResponse({
+      body: {
+        choices: [{ message: { content: JSON.stringify({ results: resultsPayload }) } }],
+        usage: usage || { prompt_tokens: 100, completion_tokens: 40, total_tokens: 140 },
       },
-    },
-  };
+    });
 }
 
 const noopSleep = async () => {};
 
-test("callOpenAI: happy path returns results that pass validation", async () => {
-  const { results } = await callOpenAI("fake-key", context, { client: fakeClientReturning([goodItem()]) });
+test("callGitHubModels: happy path returns results that pass validation", async () => {
+  const { results } = await callGitHubModels("fake-token", context, { fetchImpl: fetchReturning([goodItem()]) });
   assert.equal(results.length, 1);
   assert.deepEqual(validateAnalysisItem(results[0], 0), []);
   assert.equal(recommendsArbitraryWait(results[0]), false);
 });
 
-test("callOpenAI: result count mismatch is left for the caller to detect", async () => {
-  const { results } = await callOpenAI("fake-key", context, { client: fakeClientReturning([goodItem(), goodItem()]) });
+test("callGitHubModels: sends the token as a Bearer Authorization header, never elsewhere", async () => {
+  let capturedHeaders;
+  const fetchImpl = async (url, init) => {
+    capturedHeaders = init.headers;
+    return fakeResponse({ body: { choices: [{ message: { content: JSON.stringify({ results: [goodItem()] }) } }] } });
+  };
+  await callGitHubModels("my-token-value", context, { fetchImpl });
+  assert.equal(capturedHeaders.Authorization, "Bearer my-token-value");
+});
+
+test("callGitHubModels: posts to the official GitHub Models inference endpoint", async () => {
+  let capturedUrl;
+  const fetchImpl = async (url) => {
+    capturedUrl = url;
+    return fakeResponse({ body: { choices: [{ message: { content: JSON.stringify({ results: [goodItem()] }) } }] } });
+  };
+  await callGitHubModels("t", context, { fetchImpl });
+  assert.equal(capturedUrl, "https://models.github.ai/inference/chat/completions");
+});
+
+test("callGitHubModels: strips a markdown code fence around the JSON if the model added one anyway", async () => {
+  const fetchImpl = async () =>
+    fakeResponse({
+      body: { choices: [{ message: { content: "```json\n" + JSON.stringify({ results: [goodItem()] }) + "\n```" } }] },
+    });
+  const { results } = await callGitHubModels("t", context, { fetchImpl });
+  assert.equal(results.length, 1);
+});
+
+test("callGitHubModels: result count mismatch is left for the caller to detect", async () => {
+  const { results } = await callGitHubModels("t", context, { fetchImpl: fetchReturning([goodItem(), goodItem()]) });
   assert.notEqual(results.length, context.failedTests.length);
 });
 
 test("validateAnalysisItem: rejects an invalid classification enum value", async () => {
-  const { results } = await callOpenAI("fake-key", context, {
-    client: fakeClientReturning([goodItem({ classification: "TOTALLY_MADE_UP" })]),
+  const { results } = await callGitHubModels("t", context, {
+    fetchImpl: fetchReturning([goodItem({ classification: "TOTALLY_MADE_UP" })]),
   });
   const errors = validateAnalysisItem(results[0], 0);
   assert.ok(errors.some((e) => e.includes("classification")));
 });
 
 test("validateAnalysisItem: rejects out-of-range confidence", async () => {
-  const { results } = await callOpenAI("fake-key", context, { client: fakeClientReturning([goodItem({ confidence: 1.5 })]) });
+  const { results } = await callGitHubModels("t", context, { fetchImpl: fetchReturning([goodItem({ confidence: 1.5 })]) });
   const errors = validateAnalysisItem(results[0], 0);
   assert.ok(errors.some((e) => e.includes("confidence")));
 });
 
 test("recommendsArbitraryWait: flags a fixed-duration wait recommendation", async () => {
-  const { results } = await callOpenAI("fake-key", context, {
-    client: fakeClientReturning([
+  const { results } = await callGitHubModels("t", context, {
+    fetchImpl: fetchReturning([
       goodItem({ recommendedFix: { file: context.failedTests[0].specFile, description: "Just add cy.wait(5000) after the click." } }),
     ]),
   });
@@ -96,101 +134,116 @@ test("recommendsArbitraryWait: does not flag a deterministic-sync recommendation
   assert.equal(recommendsArbitraryWait(goodItem()), false);
 });
 
-test("callOpenAI: a non-retryable API error (401) surfaces cleanly without leaking the raw key", async () => {
-  // Mirrors what the real OpenAI API actually returns (verified live in an
-  // earlier session): a masked key, never the unmasked value. This test
-  // checks our code doesn't independently echo the *full* key anywhere -
-  // not that the SDK's own masked echo is absent, which would be unrealistic.
-  const realApiKey = "sk-REALSECRETVALUE1234567890";
-  const client = {
-    chat: {
-      completions: {
-        create: async () => {
-          const err = new Error("401 Incorrect API key provided: sk-REAL***************7890.");
-          err.status = 401;
-          throw err;
-        },
-      },
-    },
-  };
+test("stripCodeFences: strips a ```json fence, leaves plain JSON untouched", () => {
+  assert.equal(stripCodeFences('```json\n{"a":1}\n```'), '{"a":1}');
+  assert.equal(stripCodeFences('```\n{"a":1}\n```'), '{"a":1}');
+  assert.equal(stripCodeFences('{"a":1}'), '{"a":1}');
+});
+
+test("callGitHubModels: a non-retryable API error (401) surfaces cleanly without leaking the raw token", async () => {
+  const realToken = "ghs_REALSECRETVALUE1234567890";
+  const fetchImpl = async () => fakeResponse({ ok: false, status: 401, statusText: "Unauthorized" });
+
   await assert.rejects(
-    () => callOpenAI(realApiKey, context, { client, sleep: noopSleep }),
+    () => callGitHubModels(realToken, context, { fetchImpl, sleep: noopSleep }),
     (err) => {
       assert.match(err.message, /401/);
-      assert.doesNotMatch(err.message, new RegExp(realApiKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      assert.doesNotMatch(err.message, new RegExp(realToken));
       return true;
     }
   );
 });
 
-test("isRetryableError: classifies status codes correctly", () => {
-  assert.equal(isRetryableError({ status: 429 }), true);
-  assert.equal(isRetryableError({ status: 500 }), true);
-  assert.equal(isRetryableError({ status: 503 }), true);
-  assert.equal(isRetryableError({ status: 401 }), false);
-  assert.equal(isRetryableError({ status: 400 }), false);
-  assert.equal(isRetryableError({ message: "network error, no status" }), true);
+test("callGitHubModels: a 403 is treated the same as 401 - not retried, clean message", async () => {
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    return fakeResponse({ ok: false, status: 403, statusText: "Forbidden" });
+  };
+  await assert.rejects(() => callGitHubModels("t", context, { fetchImpl, sleep: noopSleep, maxAttempts: 3 }));
+  assert.equal(calls, 1);
 });
 
-test("callOpenAI: retries a transient 503 and succeeds on a later attempt", async () => {
+test("callGitHubModels: a 429 error message explicitly names the GitHub Models rate limit", async () => {
+  const fetchImpl = async () => fakeResponse({ ok: false, status: 429, statusText: "Too Many Requests" });
+  await assert.rejects(
+    () => callGitHubModels("t", context, { fetchImpl, sleep: noopSleep, maxAttempts: 1 }),
+    (err) => {
+      assert.match(err.message, /rate limit/i);
+      return true;
+    }
+  );
+});
+
+test("isRetryableStatus: 429 and 5xx are retryable, 4xx auth/lookup errors are not", () => {
+  assert.equal(isRetryableStatus(429), true);
+  assert.equal(isRetryableStatus(500), true);
+  assert.equal(isRetryableStatus(503), true);
+  assert.equal(isRetryableStatus(401), false);
+  assert.equal(isRetryableStatus(403), false);
+  assert.equal(isRetryableStatus(400), false);
+});
+
+test("callGitHubModels: retries a transient 503 and succeeds on a later attempt", async () => {
   let calls = 0;
-  const client = {
-    chat: {
-      completions: {
-        create: async () => {
-          calls += 1;
-          if (calls < 3) {
-            const err = new Error("Service unavailable");
-            err.status = 503;
-            throw err;
-          }
-          return fakeClientReturning([goodItem()]).chat.completions.create();
-        },
-      },
-    },
+  const fetchImpl = async () => {
+    calls += 1;
+    if (calls < 3) return fakeResponse({ ok: false, status: 503, statusText: "Service Unavailable" });
+    return fakeResponse({ body: { choices: [{ message: { content: JSON.stringify({ results: [goodItem()] }) } }] } });
   };
 
-  const { results } = await callOpenAI("fake-key", context, { client, sleep: noopSleep, maxAttempts: 3 });
+  const { results } = await callGitHubModels("t", context, { fetchImpl, sleep: noopSleep, maxAttempts: 3 });
   assert.equal(calls, 3, "should have retried twice before succeeding on the third attempt");
   assert.equal(results.length, 1);
 });
 
-test("callOpenAI: never retries a 401 - fails on the first attempt", async () => {
+test("callGitHubModels: never retries a 401 - fails on the first attempt", async () => {
   let calls = 0;
-  const client = {
-    chat: {
-      completions: {
-        create: async () => {
-          calls += 1;
-          const err = new Error("bad key");
-          err.status = 401;
-          throw err;
-        },
-      },
-    },
+  const fetchImpl = async () => {
+    calls += 1;
+    return fakeResponse({ ok: false, status: 401, statusText: "Unauthorized" });
   };
 
-  await assert.rejects(() => callOpenAI("fake-key", context, { client, sleep: noopSleep, maxAttempts: 3 }));
+  await assert.rejects(() => callGitHubModels("t", context, { fetchImpl, sleep: noopSleep, maxAttempts: 3 }));
   assert.equal(calls, 1, "a 401 should never be retried");
 });
 
-test("callOpenAI: gives up after maxAttempts on persistent transient errors", async () => {
+test("callGitHubModels: gives up after maxAttempts on persistent transient errors", async () => {
   let calls = 0;
-  const client = {
-    chat: {
-      completions: {
-        create: async () => {
-          calls += 1;
-          const err = new Error("Service unavailable");
-          err.status = 503;
-          throw err;
-        },
-      },
-    },
+  const fetchImpl = async () => {
+    calls += 1;
+    return fakeResponse({ ok: false, status: 500, statusText: "Internal Server Error" });
   };
 
-  await assert.rejects(() => callOpenAI("fake-key", context, { client, sleep: noopSleep, maxAttempts: 3 }));
+  await assert.rejects(() => callGitHubModels("t", context, { fetchImpl, sleep: noopSleep, maxAttempts: 3 }));
   assert.equal(calls, 3);
+});
+
+test("callGitHubModels: a network-level failure (no HTTP response at all) is retried like a transient error", async () => {
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    if (calls < 2) throw new Error("fetch failed: ECONNRESET");
+    return fakeResponse({ body: { choices: [{ message: { content: JSON.stringify({ results: [goodItem()] }) } }] } });
+  };
+  const { results } = await callGitHubModels("t", context, { fetchImpl, sleep: noopSleep, maxAttempts: 3 });
+  assert.equal(calls, 2);
+  assert.equal(results.length, 1);
+});
+
+test("callGitHubModels: empty response content produces a clear error, not a crash", async () => {
+  const fetchImpl = async () => fakeResponse({ body: { choices: [{ message: { content: "" } }] } });
+  await assert.rejects(() => callGitHubModels("t", context, { fetchImpl, sleep: noopSleep }), /did not include any content/);
+});
+
+test("callGitHubModels: unexpected response structure (no choices at all) produces a clear error", async () => {
+  const fetchImpl = async () => fakeResponse({ body: { unexpected: true } });
+  await assert.rejects(() => callGitHubModels("t", context, { fetchImpl, sleep: noopSleep }), /did not include any content/);
+});
+
+test("callGitHubModels: invalid JSON in the response content produces a clear error, not a fabricated analysis", async () => {
+  const fetchImpl = async () => fakeResponse({ body: { choices: [{ message: { content: "this is not json at all" } }] } });
+  await assert.rejects(() => callGitHubModels("t", context, { fetchImpl, sleep: noopSleep }), /not valid JSON/);
 });
 
 test("readHistory: returns null when reports/ai/history.json doesn't exist", (t) => {

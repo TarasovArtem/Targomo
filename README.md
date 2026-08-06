@@ -71,5 +71,52 @@ The pipeline:
 
 1. Checks out the repository
 2. Installs Node.js dependencies with `npm ci`
-3. Runs the Cypress E2E suite against the live app (Chrome and Firefox, in parallel)
-4. Uploads screenshots for failed runs and videos (when enabled) as workflow artifacts
+3. Runs the Cypress E2E suite against the live app (Chrome and Edge, in parallel - Firefox is excluded from CI due to a known Firefox-in-Docker launch issue; run it locally with `npm run firefox`)
+4. Uploads screenshots for failed runs, videos, and (on failure) the structured test report and AI analysis as workflow artifacts
+
+### QA Agent (AI failure analysis)
+
+When an E2E job fails, a QA Agent step analyzes the failure and classifies it as `PRODUCT_BUG`, `TEST_BUG`, `FLAKY_TEST`, `ENVIRONMENT`, `EXTERNAL_DEPENDENCY`, or `UNKNOWN`, before recommending a fix. It never changes whether the job passes or fails - it's a diagnostic layer on top of the real test result, not a gate.
+
+```
+E2E tests
+   │
+   ├─ PASS ─────────────────────────────────────────► workflow PASS
+   │
+   └─ FAIL
+        │
+        ▼
+   Failure Context Collector (scripts/ai/collect-context.js)
+        │  failed test names, errors, relevant spec/page-object source,
+        │  browser, known project constraints - no secrets, no full repo dump
+        ▼
+   GitHub Models (scripts/ai/analyze-failure.js)
+        │  QA root-cause analysis
+        ▼
+   reports/ai/ai-report.json
+        │
+        ├─► GitHub Actions artifact (per browser)
+        └─► PR comment (pull_request runs only)
+        │
+        ▼
+   workflow remains FAILED
+```
+
+**No separate OpenAI API key or account is needed.** The QA Agent calls [GitHub Models](https://docs.github.com/en/github-models) using the workflow's own automatically-generated `GITHUB_TOKEN` - the same token every GitHub Actions run already has, authenticated with `Authorization: Bearer <token>`. The only setup required is the workflow permission:
+
+```yaml
+permissions:
+  models: read
+```
+
+GitHub Models usage limits still apply per GitHub's own rate limits for the token/account running the workflow - the AI step retries a bounded number of times on rate-limit/server errors and otherwise fails gracefully without affecting the E2E test result.
+
+Run it locally:
+
+```
+npm run chrome              # produces reports/cypress/*.json
+npm run ai:collect           # produces reports/ai/context.json
+GITHUB_TOKEN=<your token> npm run ai:analyze   # produces reports/ai/ai-report.json
+```
+
+`AI_MODEL` can be set to any [GitHub Models catalog id](https://github.com/marketplace/models) (default: `openai/gpt-4o`) without touching source code - see [scripts/ai/config.js](scripts/ai/config.js).
