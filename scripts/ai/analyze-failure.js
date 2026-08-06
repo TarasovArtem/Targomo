@@ -20,7 +20,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { MODEL, GITHUB_MODELS_ENDPOINT } = require("./config");
+const { MODEL, GITHUB_MODELS_ENDPOINT, PROVIDER_PAUSED_REASON } = require("./config");
 const { CLASSIFICATIONS, buildSystemPrompt, buildUserPrompt } = require("./qa-agent-prompt");
 
 const ROOT = path.resolve(__dirname, "..", "..");
@@ -88,6 +88,41 @@ function requireGitHubToken() {
     );
   }
   return token;
+}
+
+// Used only when PROVIDER_PAUSED_REASON is set (see config.js) - a
+// synthesized, honest "we didn't actually analyze this" result per failed
+// test, not a fabricated analysis. classification: UNKNOWN + confidence: 0
+// is the correct, existing vocabulary for "insufficient evidence" - here
+// the "evidence" that's missing is an AI provider to call at all. Reuses
+// the exact same shape validateAnalysisItem() already enforces, so this
+// stub is held to the same contract as a real model response and flows
+// through the untouched PR-comment/artifact pipeline unchanged.
+function buildPausedResult(failedTest) {
+  return {
+    test: { title: failedTest.title || null, specFile: failedTest.specFile || null },
+    classification: "UNKNOWN",
+    confidence: 0,
+    summary: "AI analysis did not run for this failure.",
+    rootCause: PROVIDER_PAUSED_REASON,
+    evidence: [],
+    recommendedFix: null,
+    shouldCreateBug: false,
+    shouldRetry: false,
+  };
+}
+
+function buildPausedReport(context, failedTests) {
+  return {
+    generatedAt: new Date().toISOString(),
+    model: null,
+    sourceContext: pickSourceContext(context),
+    history: null,
+    usage: null,
+    results: failedTests.map(buildPausedResult),
+    warnings: [],
+    note: `AI analysis is paused: ${PROVIDER_PAUSED_REASON}`,
+  };
 }
 
 function pickSourceContext(context) {
@@ -300,6 +335,17 @@ async function main() {
     return;
   }
 
+  // Short-circuits before any network call, GITHUB_TOKEN check, or history
+  // read - there is nothing to authenticate to or retry against a
+  // permanently dead endpoint. See PROVIDER_PAUSED_REASON in config.js.
+  if (PROVIDER_PAUSED_REASON) {
+    const pausedReport = buildPausedReport(context, failedTests);
+    fs.writeFileSync(OUTPUT_FILE, JSON.stringify(pausedReport, null, 2));
+    console.log(`[ai:analyze] AI analysis is paused: ${PROVIDER_PAUSED_REASON}`);
+    console.log(`[ai:analyze] wrote ${path.relative(ROOT, OUTPUT_FILE)} (${pausedReport.results.length} stub result(s)).`);
+    return;
+  }
+
   let token;
   try {
     token = requireGitHubToken();
@@ -382,5 +428,7 @@ module.exports = {
   stripCodeFences,
   pickSourceContext,
   readHistory,
+  buildPausedResult,
+  buildPausedReport,
   MODEL,
 };
