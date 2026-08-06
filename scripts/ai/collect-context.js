@@ -1,0 +1,357 @@
+#!/usr/bin/env node
+/**
+ * Failure Context Collector
+ *
+ * Reads the mochawesome JSON report(s) produced by `cypress run` (see
+ * reporterOptions in cypress.config.js), extracts failed tests, and writes
+ * a single small, LLM-safe JSON file to reports/ai/context.json describing
+ * what failed and the minimal source needed to reason about it.
+ *
+ * No network calls. No AI API calls. No secrets are read.
+ */
+
+"use strict";
+
+const fs = require("fs");
+const path = require("path");
+const { execFileSync } = require("child_process");
+
+const ROOT = path.resolve(__dirname, "..", "..");
+const REPORTS_DIR = path.join(ROOT, "reports", "cypress");
+const OUTPUT_DIR = path.join(ROOT, "reports", "ai");
+const OUTPUT_FILE = path.join(OUTPUT_DIR, "context.json");
+const SCREENSHOTS_DIR = path.join(ROOT, "cypress", "screenshots");
+
+// Keeps the collected context small and safe to hand to an LLM later.
+const MAX_FILE_BYTES = 20 * 1024;
+const MAX_TOTAL_RELEVANT_BYTES = 150 * 1024;
+
+// Only files under these repo-relative roots (or exactly matching one of
+// the extra allowed paths) are ever read into relevantFiles, even if an
+// import resolves elsewhere. This is a defensive boundary, not just a
+// convenience filter.
+const ALLOWED_DIRS = ["cypress"];
+const ALLOWED_FILES = ["cypress.config.js", "package.json"];
+
+// Never read these, even if something inside ALLOWED_DIRS somehow imports
+// them (e.g. a future cypress.env.json or a stray .env in cypress/).
+const DENYLIST_PATTERN = /(^|[\\/])\.env|secret|credential|\.pem$|\.key$|token/i;
+
+function log(message) {
+  process.stdout.write(`[ai:collect] ${message}\n`);
+}
+
+function runGit(args) {
+  try {
+    return execFileSync("git", args, { cwd: ROOT, stdio: ["ignore", "pipe", "ignore"] })
+      .toString()
+      .trim();
+  } catch {
+    return null;
+  }
+}
+
+function getMetadata() {
+  const lifecycleEvent = process.env.npm_lifecycle_event || "";
+  const browserFromLifecycle = ["chrome", "firefox", "edge"].includes(lifecycleEvent)
+    ? lifecycleEvent
+    : null;
+
+  return {
+    repository: process.env.GITHUB_REPOSITORY || runGit(["remote", "get-url", "origin"]) || null,
+    commit: process.env.GITHUB_SHA || runGit(["rev-parse", "HEAD"]) || null,
+    branch:
+      process.env.GITHUB_HEAD_REF ||
+      process.env.GITHUB_REF_NAME ||
+      runGit(["rev-parse", "--abbrev-ref", "HEAD"]) ||
+      null,
+    runId: process.env.GITHUB_RUN_ID || null,
+    event: process.env.GITHUB_EVENT_NAME || null,
+    // No GitHub Actions env var carries the Cypress --browser flag, so the
+    // workflow sets TEST_BROWSER from matrix.browser explicitly; BROWSER/
+    // CYPRESS_BROWSER and the npm script name are best-effort fallbacks
+    // for local runs.
+    browser:
+      process.env.TEST_BROWSER || process.env.BROWSER || process.env.CYPRESS_BROWSER || browserFromLifecycle || null,
+    ci: process.env.CI === "true" || process.env.CI === "1",
+  };
+}
+
+function normalizeSpecPath(rawFile) {
+  if (!rawFile) return null;
+  let p = rawFile.replace(/\\/g, "/");
+  if (p.startsWith(ROOT.replace(/\\/g, "/"))) {
+    p = p.slice(ROOT.replace(/\\/g, "/").length);
+  }
+  p = p.replace(/^\/+/, "");
+  return p || null;
+}
+
+function loadReports() {
+  const warnings = [];
+
+  if (!fs.existsSync(REPORTS_DIR)) {
+    warnings.push(
+      `No report directory found at reports/cypress. Run a test script (e.g. npm run chrome) before ai:collect.`
+    );
+    return { reports: [], warnings };
+  }
+
+  const allJson = fs
+    .readdirSync(REPORTS_DIR)
+    .filter((f) => f.toLowerCase().endsWith(".json"));
+
+  if (allJson.length === 0) {
+    warnings.push(`reports/cypress exists but contains no JSON report files.`);
+    return { reports: [], warnings };
+  }
+
+  // Prefer a merged report (npm run report:merge) if present; otherwise
+  // fall back to reading every per-spec mochawesome file.
+  const filenames = allJson.includes("report.json") ? ["report.json"] : allJson;
+
+  const reports = [];
+  for (const filename of filenames) {
+    const fullPath = path.join(REPORTS_DIR, filename);
+    try {
+      const parsed = JSON.parse(fs.readFileSync(fullPath, "utf8"));
+      reports.push(parsed);
+    } catch (err) {
+      warnings.push(`Could not parse ${path.join("reports", "cypress", filename)}: ${err.message}`);
+    }
+  }
+
+  return { reports, warnings };
+}
+
+// Recursively walks a mochawesome suite tree, yielding every test with its
+// resolved ancestor suite titles attached.
+function* walkSuite(suite, ancestorTitles) {
+  if (!suite) return;
+
+  const titles = suite.title ? [...ancestorTitles, suite.title] : ancestorTitles;
+
+  for (const test of suite.tests || []) {
+    yield { test, suiteTitles: titles };
+  }
+  for (const child of suite.suites || []) {
+    yield* walkSuite(child, titles);
+  }
+}
+
+function resolveScreenshotPath(specFile, suiteTitles, testTitle) {
+  if (!specFile) return null;
+  try {
+    const specDir = path.join(SCREENSHOTS_DIR, path.basename(specFile));
+    if (!fs.existsSync(specDir)) return null;
+
+    const baseName = [...suiteTitles, testTitle].join(" -- ");
+    const candidates = fs.readdirSync(specDir).filter((f) => f.startsWith(baseName));
+    // Cypress may save multiple attempts, e.g. "... (failed).png", "... (1).png".
+    const failedShot = candidates.find((f) => f.includes("(failed)")) || candidates[0];
+    if (!failedShot) return null;
+
+    return normalizeSpecPath(path.join(specDir, failedShot));
+  } catch {
+    return null;
+  }
+}
+
+function extractFailedTests(reports) {
+  const failedTests = [];
+
+  for (const report of reports) {
+    for (const rootSuite of report.results || []) {
+      const specFile = normalizeSpecPath(rootSuite.file || rootSuite.fullFile);
+
+      for (const { test, suiteTitles } of walkSuite(rootSuite, [])) {
+        const isFailed = test.state === "failed" || (test.fail === true && test.pending !== true);
+        if (!isFailed) continue;
+
+        failedTests.push({
+          title: test.title || null,
+          fullTitle: test.fullTitle || null,
+          suite: suiteTitles.join(" > ") || null,
+          specFile,
+          status: "failed",
+          duration: typeof test.duration === "number" ? test.duration : null,
+          error: {
+            message: (test.err && test.err.message) || null,
+            stack: (test.err && (test.err.estack || test.err.stack)) || null,
+          },
+          screenshot: resolveScreenshotPath(specFile, suiteTitles, test.title || ""),
+        });
+      }
+    }
+  }
+
+  return failedTests;
+}
+
+function summarizeTestResults(reports) {
+  const specs = [];
+  const totals = { tests: 0, passed: 0, failed: 0, pending: 0, duration: 0 };
+
+  for (const report of reports) {
+    for (const rootSuite of report.results || []) {
+      const specFile = normalizeSpecPath(rootSuite.file || rootSuite.fullFile);
+      const stats = report.stats || {};
+
+      specs.push({
+        specFile,
+        tests: stats.tests ?? null,
+        passed: stats.passes ?? null,
+        failed: stats.failures ?? null,
+        pending: stats.pending ?? null,
+        duration: stats.duration ?? null,
+      });
+
+      totals.tests += stats.tests || 0;
+      totals.passed += stats.passes || 0;
+      totals.failed += stats.failures || 0;
+      totals.pending += stats.pending || 0;
+      totals.duration += stats.duration || 0;
+    }
+  }
+
+  return { found: true, totals, specs };
+}
+
+function isPathAllowed(absPath) {
+  const rel = normalizeSpecPath(absPath);
+  if (!rel) return false;
+  if (DENYLIST_PATTERN.test(rel)) return false;
+  if (ALLOWED_FILES.includes(rel)) return true;
+  return ALLOWED_DIRS.some((dir) => rel === dir || rel.startsWith(`${dir}/`));
+}
+
+function readFileSafe(absPath) {
+  try {
+    if (!isPathAllowed(absPath)) return null;
+    const stat = fs.statSync(absPath);
+    if (!stat.isFile()) return null;
+
+    const buffer = fs.readFileSync(absPath);
+    const truncated = buffer.length > MAX_FILE_BYTES;
+    const content = truncated
+      ? `${buffer.subarray(0, MAX_FILE_BYTES).toString("utf8")}\n/* ...truncated... */`
+      : buffer.toString("utf8");
+
+    return { content, truncated };
+  } catch {
+    return null;
+  }
+}
+
+// Best-effort static import resolver for the two module styles used in
+// this repo's page objects/specs: ES `import ... from '...'` and CommonJS
+// `require('...')`. Only relative imports are followed (bare/package
+// imports like "cypress" are irrelevant to failure context).
+function resolveLocalImports(sourceCode, fromDir) {
+  const importPattern = /(?:from\s+|require\()\s*['"](\.[^'"]+)['"]/g;
+  const resolved = new Set();
+  let match;
+
+  while ((match = importPattern.exec(sourceCode)) !== null) {
+    const specifier = match[1];
+    const base = path.resolve(fromDir, specifier);
+    const candidates = [base, `${base}.js`, path.join(base, "index.js")];
+
+    const found = candidates.find((candidate) => {
+      try {
+        return fs.statSync(candidate).isFile();
+      } catch {
+        return false;
+      }
+    });
+
+    if (found) resolved.add(found);
+  }
+
+  return [...resolved];
+}
+
+function buildRelevantFiles(failedTests, warnings) {
+  const files = {};
+  let totalBytes = 0;
+
+  const addFile = (absPath) => {
+    const rel = normalizeSpecPath(absPath);
+    if (!rel || files[rel]) return;
+
+    if (totalBytes >= MAX_TOTAL_RELEVANT_BYTES) {
+      warnings.push(`relevantFiles size cap reached; skipped ${rel}.`);
+      return;
+    }
+
+    const result = readFileSafe(absPath);
+    if (!result) return;
+
+    files[rel] = result;
+    totalBytes += result.content.length;
+  };
+
+  // Test runner config and package.json give the AI step baseline project
+  // context (browser/base URL config, available scripts/deps).
+  addFile(path.join(ROOT, "cypress.config.js"));
+  addFile(path.join(ROOT, "package.json"));
+
+  const specPaths = new Set(failedTests.map((t) => t.specFile).filter(Boolean));
+
+  for (const specRelPath of specPaths) {
+    const specAbsPath = path.join(ROOT, specRelPath);
+    const specResult = readFileSafe(specAbsPath);
+    if (!specResult) {
+      warnings.push(`Failed spec source not found on disk: ${specRelPath}`);
+      continue;
+    }
+    addFile(specAbsPath);
+
+    const imports = resolveLocalImports(specResult.content, path.dirname(specAbsPath));
+    for (const importedAbsPath of imports) {
+      addFile(importedAbsPath);
+    }
+  }
+
+  return files;
+}
+
+function main() {
+  fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+
+  const metadata = getMetadata();
+  const { reports, warnings } = loadReports();
+
+  let testResults = { found: false };
+  let failedTests = [];
+  let relevantFiles = {};
+
+  if (reports.length > 0) {
+    testResults = summarizeTestResults(reports);
+    failedTests = extractFailedTests(reports);
+    if (failedTests.length > 0) {
+      relevantFiles = buildRelevantFiles(failedTests, warnings);
+    }
+  }
+
+  const context = {
+    generatedAt: new Date().toISOString(),
+    metadata,
+    testResults,
+    failedTests,
+    relevantFiles,
+    warnings,
+  };
+
+  fs.writeFileSync(OUTPUT_FILE, JSON.stringify(context, null, 2));
+
+  log(
+    `wrote ${path.relative(ROOT, OUTPUT_FILE)} ` +
+      `(${failedTests.length} failed test(s), ${Object.keys(relevantFiles).length} relevant file(s))`
+  );
+  for (const warning of warnings) {
+    log(`warning: ${warning}`);
+  }
+}
+
+main();
