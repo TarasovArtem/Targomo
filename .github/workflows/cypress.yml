@@ -22,7 +22,10 @@ jobs:
     # "Cannot read properties of undefined (reading 'browsingContextGetTree')").
     container:
       image: cypress/included:14.5.4
-      options: --shm-size=1gb
+      # seccomp=unconfined works around a Firefox sandbox EPERM failure
+      # (CanCreateUserNamespace) that is otherwise unavoidable in a
+      # containerized CI runner. See cypress-io/cypress-docker-images#1343.
+      options: --shm-size=1gb --security-opt seccomp=unconfined
     strategy:
       fail-fast: false
       matrix:
