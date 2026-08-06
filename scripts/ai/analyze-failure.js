@@ -138,34 +138,67 @@ function recommendsArbitraryWait(item) {
   return ARBITRARY_WAIT_PATTERN.test(text);
 }
 
-// `client` is injectable for testing (see scripts/ai/*.test-manual.js-style
-// harnesses); production calls always use the real OpenAI client.
-async function callOpenAI(apiKey, context, { client } = {}) {
+// Retried: rate limiting, server-side/gateway errors, and anything that
+// never got an HTTP response at all (network blip, timeout). NOT retried:
+// 4xx errors like 401 (bad key) or 400 (bad request) - those fail exactly
+// the same way every time, so retrying would only add latency before the
+// same clear error.
+const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504]);
+
+function isRetryableError(err) {
+  if (!err) return false;
+  if (typeof err.status === "number") return RETRYABLE_STATUS_CODES.has(err.status);
+  return true;
+}
+
+function defaultSleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// `client`/`sleep` are injectable for testing; production calls always use
+// the real OpenAI client and a real timer.
+async function callOpenAI(
+  apiKey,
+  context,
+  { client, maxAttempts = 3, retryDelaysMs = [500, 1500], sleep = defaultSleep } = {}
+) {
   const openai = client || new OpenAI({ apiKey });
 
   let response;
-  try {
-    response = await openai.chat.completions.create({
-      model: MODEL,
-      temperature: 0,
-      messages: [
-        { role: "system", content: buildSystemPrompt() },
-        { role: "user", content: buildUserPrompt(context) },
-      ],
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: "qa_failure_analysis",
-          strict: true,
-          schema: RESPONSE_SCHEMA,
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      response = await openai.chat.completions.create({
+        model: MODEL,
+        temperature: 0,
+        messages: [
+          { role: "system", content: buildSystemPrompt() },
+          { role: "user", content: buildUserPrompt(context) },
+        ],
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "qa_failure_analysis",
+            strict: true,
+            schema: RESPONSE_SCHEMA,
+          },
         },
-      },
-    });
-  } catch (err) {
+      });
+      lastErr = null;
+      break;
+    } catch (err) {
+      lastErr = err;
+      const isLastAttempt = attempt === maxAttempts;
+      if (isLastAttempt || !isRetryableError(err)) break;
+      await sleep(retryDelaysMs[attempt - 1] ?? retryDelaysMs[retryDelaysMs.length - 1]);
+    }
+  }
+
+  if (lastErr) {
     // Deliberately surface only status/message - never the raw error/request
     // object, which could otherwise leak request metadata into CI logs.
-    const status = err && err.status ? ` (HTTP ${err.status})` : "";
-    throw new AnalyzerError(`OpenAI API request failed${status}: ${(err && err.message) || "unknown error"}`);
+    const status = lastErr.status ? ` (HTTP ${lastErr.status})` : "";
+    throw new AnalyzerError(`OpenAI API request failed${status}: ${lastErr.message || "unknown error"}`);
   }
 
   const raw = response && response.choices && response.choices[0] && response.choices[0].message.content;
@@ -286,6 +319,7 @@ module.exports = {
   callOpenAI,
   validateAnalysisItem,
   recommendsArbitraryWait,
+  isRetryableError,
   pickSourceContext,
   MODEL,
 };
