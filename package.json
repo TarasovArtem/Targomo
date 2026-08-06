@@ -10,6 +10,7 @@
     "firefox": "cypress run --spec 'cypress/e2e/**' --headless --browser firefox",
     "edge": "cypress run --spec 'cypress/e2e/**' --headless --browser edge",
     "ai:collect": "node scripts/ai/collect-context.js",
+    "ai:history": "node scripts/ai/collect-history.js",
     "ai:analyze": "node scripts/ai/analyze-failure.js",
     "test:unit": "node --test scripts/ai/*.test.js"
   },

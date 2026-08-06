@@ -2,7 +2,7 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { formatComment, formatResolvedComment, MARKER } = require("./format-pr-comment");
+const { formatComment, formatResolvedComment, formatHistoryLine, MARKER } = require("./format-pr-comment");
 
 function baseResult(overrides = {}) {
   return {
@@ -94,4 +94,36 @@ test("formatResolvedComment: carries the same marker as the failure comment for 
   assert.ok(body.includes(MARKER("chrome")));
   assert.match(body, /Resolved/);
   assert.match(body, /\*\*Browser:\*\*\nchrome/);
+});
+
+test("formatHistoryLine: renders the compact pass/fail/retry counts", () => {
+  const line = formatHistoryLine({ runsConsidered: 10, passes: 7, failures: 3, retryPasses: 2 });
+  assert.match(line, /7\/10/);
+  assert.match(line, /3 failed/);
+  assert.match(line, /2 passed after a re-run/);
+});
+
+test("formatHistoryLine: omits the retry clause when retryPasses is 0", () => {
+  const line = formatHistoryLine({ runsConsidered: 10, passes: 10, failures: 0, retryPasses: 0 });
+  assert.doesNotMatch(line, /re-run/);
+});
+
+test("formatHistoryLine: returns null when history is absent or malformed", () => {
+  assert.equal(formatHistoryLine(null), null);
+  assert.equal(formatHistoryLine(undefined), null);
+  assert.equal(formatHistoryLine({}), null);
+});
+
+test("formatComment: includes a Recent history line when report.history is present", () => {
+  const body = formatComment({
+    browser: "edge",
+    report: { results: [baseResult()], history: { runsConsidered: 10, passes: 7, failures: 3, retryPasses: 2 } },
+  });
+  assert.match(body, /\*\*Recent history:\*\*/);
+  assert.match(body, /7\/10 of the last runs on `main` passed/);
+});
+
+test("formatComment: omits the Recent history line entirely when report.history is absent", () => {
+  const body = formatComment({ browser: "chrome", report: { results: [baseResult()] } });
+  assert.doesNotMatch(body, /Recent history/);
 });

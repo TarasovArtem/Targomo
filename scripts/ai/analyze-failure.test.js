@@ -2,7 +2,12 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { callOpenAI, validateAnalysisItem, recommendsArbitraryWait, isRetryableError } = require("./analyze-failure");
+const fs = require("node:fs");
+const path = require("node:path");
+const { callOpenAI, validateAnalysisItem, recommendsArbitraryWait, isRetryableError, readHistory } = require("./analyze-failure");
+
+const ROOT = path.resolve(__dirname, "..", "..");
+const HISTORY_FILE = path.join(ROOT, "reports", "ai", "history.json");
 
 const context = {
   metadata: { repository: "o/r", commit: "abc123", branch: "main", runId: null, event: null, browser: "chrome", ci: false },
@@ -186,4 +191,48 @@ test("callOpenAI: gives up after maxAttempts on persistent transient errors", as
 
   await assert.rejects(() => callOpenAI("fake-key", context, { client, sleep: noopSleep, maxAttempts: 3 }));
   assert.equal(calls, 3);
+});
+
+test("readHistory: returns null when reports/ai/history.json doesn't exist", (t) => {
+  fs.rmSync(path.dirname(HISTORY_FILE), { recursive: true, force: true });
+  t.after(() => fs.rmSync(path.dirname(HISTORY_FILE), { recursive: true, force: true }));
+
+  assert.equal(readHistory(), null);
+});
+
+test("readHistory: returns null when history.json is marked unavailable", (t) => {
+  fs.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true });
+  fs.writeFileSync(HISTORY_FILE, JSON.stringify({ available: false, reason: "no prior runs" }));
+  t.after(() => fs.rmSync(path.dirname(HISTORY_FILE), { recursive: true, force: true }));
+
+  assert.equal(readHistory(), null);
+});
+
+test("readHistory: returns null for unparseable JSON instead of throwing", (t) => {
+  fs.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true });
+  fs.writeFileSync(HISTORY_FILE, "{ not json");
+  t.after(() => fs.rmSync(path.dirname(HISTORY_FILE), { recursive: true, force: true }));
+
+  assert.doesNotThrow(() => readHistory());
+  assert.equal(readHistory(), null);
+});
+
+test("readHistory: strips internal bookkeeping fields, keeping only the compact aggregate counts", (t) => {
+  fs.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true });
+  fs.writeFileSync(
+    HISTORY_FILE,
+    JSON.stringify({
+      available: true,
+      browser: "chrome",
+      branch: "main",
+      runsConsidered: 10,
+      passes: 7,
+      failures: 3,
+      retryPasses: 2,
+      generatedAt: "2026-01-01T00:00:00.000Z",
+    })
+  );
+  t.after(() => fs.rmSync(path.dirname(HISTORY_FILE), { recursive: true, force: true }));
+
+  assert.deepEqual(readHistory(), { runsConsidered: 10, passes: 7, failures: 3, retryPasses: 2 });
 });

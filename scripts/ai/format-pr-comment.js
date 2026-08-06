@@ -96,10 +96,27 @@ function MARKER(browser) {
   return `<!-- qa-agent-report:${browser} -->`;
 }
 
+// Surfaces the same compact counts the model was given (see
+// qa-agent-prompt.js), so a human reading the comment can see the actual
+// pass/fail pattern behind a FLAKY_TEST classification instead of having
+// to trust the model's prose or dig through the ai-report artifact.
+function formatHistoryLine(history) {
+  if (!history || typeof history.runsConsidered !== "number") return null;
+
+  const { runsConsidered, passes, failures, retryPasses } = history;
+  const retryPart = retryPasses > 0 ? `, ${retryPasses} passed after a re-run` : "";
+  return `${passes}/${runsConsidered} of the last runs on \`main\` passed for this browser (${failures} failed${retryPart}).`;
+}
+
 function formatComment({ browser, report, runUrl }) {
   const results = Array.isArray(report && report.results) ? report.results : [];
 
   const header = [`### 🤖 QA Agent — E2E Failure Analysis`, "", "**Browser:**", String(browser || "unknown"), ""];
+
+  const historyLine = formatHistoryLine(report && report.history);
+  if (historyLine) {
+    header.push("**Recent history:**", historyLine, "");
+  }
 
   const blocks = results.map((result, i) => {
     const heading = results.length > 1 ? [`#### Failure ${i + 1} of ${results.length}`, ""] : [];
@@ -140,4 +157,4 @@ function formatResolvedComment({ browser, runUrl }) {
   return lines.join("\n");
 }
 
-module.exports = { formatComment, formatResolvedComment, MARKER };
+module.exports = { formatComment, formatResolvedComment, formatHistoryLine, MARKER };
