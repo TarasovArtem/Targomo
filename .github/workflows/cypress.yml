@@ -9,6 +9,11 @@ on:
       - main
   workflow_dispatch:
 
+# Read-only by default. The AI analysis step only calls the OpenAI API and
+# writes local files - it needs no repo/PR/issue write access.
+permissions:
+  contents: read
+
 jobs:
   cypress-tests:
     name: Cypress - ${{ matrix.browser }}
@@ -39,11 +44,43 @@ jobs:
 
       # baseUrl in cypress.config.js points at the externally hosted app,
       # so there is nothing to build or serve locally before running tests.
+      #
+      # continue-on-error lets the job carry on into the AI analysis steps
+      # below instead of stopping here. steps.run_tests.outcome records the
+      # real pass/fail result (unaffected by continue-on-error, which only
+      # overrides .conclusion) - the "Fail job on E2E failure" step at the
+      # end of this job reads it to make sure the job still ends up failed.
       - name: Run Cypress E2E tests (${{ matrix.browser }})
+        id: run_tests
+        continue-on-error: true
         run: npm run ${{ matrix.browser }}
 
+      # Everything below this point is additive failure diagnostics. None
+      # of it can turn a failed E2E run into a passing job: continue-on-error
+      # above only lets these steps execute, and steps.run_tests.outcome
+      # (not the ambient failure()/success() functions, which would already
+      # read as "success" once a continue-on-error step fails) is what the
+      # final gate step below checks.
+
+      - name: Collect structured failure context
+        if: steps.run_tests.outcome == 'failure'
+        env:
+          TEST_BROWSER: ${{ matrix.browser }}
+        run: npm run ai:collect
+
+      # AI analysis is informational only. It never runs when tests pass,
+      # and continue-on-error here means an OpenAI outage/invalid key can't
+      # add a second, unrelated failure reason - the job still fails for
+      # the original E2E reason via the gate step below either way.
+      - name: AI failure analysis
+        if: steps.run_tests.outcome == 'failure'
+        continue-on-error: true
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: npm run ai:analyze
+
       - name: Upload Cypress screenshots
-        if: failure()
+        if: steps.run_tests.outcome == 'failure'
         uses: actions/upload-artifact@v7
         with:
           name: cypress-screenshots-${{ matrix.browser }}
@@ -57,3 +94,31 @@ jobs:
           name: cypress-videos-${{ matrix.browser }}
           path: cypress/videos
           if-no-files-found: ignore
+
+      - name: Upload structured test report
+        if: steps.run_tests.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: cypress-report-${{ matrix.browser }}
+          path: reports/cypress
+          if-no-files-found: ignore
+
+      - name: Upload AI failure context and analysis
+        if: steps.run_tests.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ai-report-${{ matrix.browser }}
+          path: reports/ai
+          if-no-files-found: ignore
+
+      # The one step in this job allowed to actually fail it. Everything
+      # above ran (or was skipped) without affecting job status; this is
+      # the sole source of truth for whether the job conclusion is
+      # failure, and it depends only on the original test outcome - never
+      # on whether AI collection/analysis succeeded, failed, or was
+      # skipped.
+      - name: Fail job on E2E failure
+        if: steps.run_tests.outcome == 'failure'
+        run: |
+          echo "Cypress E2E tests failed for browser '${{ matrix.browser }}'. See the report/screenshot/video artifacts (and AI analysis, if it ran) for details."
+          exit 1

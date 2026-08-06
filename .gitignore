@@ -4,6 +4,8 @@ npm-debug.log*
 cypress/videos
 cypress/screenshots
 cypress/reports
+reports/cypress
+reports/ai
 debug.log
 CLAUDE.md
 .claude/settings.local.json

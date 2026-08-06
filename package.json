@@ -8,7 +8,10 @@
     "test:e2e": "cypress run",
     "chrome": "cypress run --spec 'cypress/e2e/**' --headless --browser chrome",
     "firefox": "cypress run --spec 'cypress/e2e/**' --headless --browser firefox",
-    "edge": "cypress run --spec 'cypress/e2e/**' --headless --browser edge"
+    "edge": "cypress run --spec 'cypress/e2e/**' --headless --browser edge",
+    "report:merge": "mochawesome-merge reports/cypress/*.json > reports/cypress/report.json",
+    "ai:collect": "node scripts/ai/collect-context.js",
+    "ai:analyze": "node scripts/ai/analyze-failure.js"
   },
   "repository": {
     "type": "git",
@@ -21,6 +24,9 @@
   },
   "homepage": "https://github.com/TarasovArtem/Targomo#readme",
   "devDependencies": {
-    "cypress": "^15.19.0"
+    "cypress": "^15.19.0",
+    "mochawesome": "^8.0.1",
+    "mochawesome-merge": "^5.1.1",
+    "openai": "^7.4.0"
   }
 }
