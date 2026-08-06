@@ -11,16 +11,20 @@ on:
 
 # Minimal permissions for what this workflow actually does: read the repo,
 # read past workflow run/job history for flaky-test signal (actions: read),
-# and post/update a PR comment with the AI analysis. Nothing here needs
-# issues, checks, or any other write scope. For pull_request runs triggered
-# by a fork, GitHub forces GITHUB_TOKEN to read-only regardless of what's
-# declared here - see the "AI failure analysis"/"Comment AI analysis on PR"
-# steps below for how that's handled. actions: read is unaffected by that
-# downgrade (it's already read-only), so history collection works the same
-# for forked and same-repo PRs alike.
+# call GitHub Models for AI failure analysis (models: read), and post/update
+# a PR comment with the analysis. Nothing here needs issues, checks, or any
+# other write scope. For pull_request runs triggered by a fork, GitHub
+# forces GITHUB_TOKEN to read-only regardless of what's declared here - see
+# the "AI failure analysis"/"Comment AI analysis on PR" steps below for how
+# that's handled. contents/actions/models are all already read-only, so
+# they're unaffected by that downgrade - unlike a custom API key secret
+# (which forks never receive at all), GitHub Models access via GITHUB_TOKEN
+# actually works the same for forked and same-repo PRs; only the
+# pull-requests: write comment step is fork-restricted.
 permissions:
   contents: read
   actions: read
+  models: read
   pull-requests: write
 
 jobs:
@@ -88,37 +92,45 @@ jobs:
       - name: Collect run history for flaky-test reasoning
         if: steps.run_tests.outcome == 'failure'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
           TEST_BROWSER: ${{ matrix.browser }}
         run: npm run ai:history
 
-      # AI analysis is informational only. It never runs when tests pass,
-      # and continue-on-error here means an OpenAI outage/invalid key can't
-      # add a second, unrelated failure reason - the job still fails for
-      # the original E2E reason via the gate step below either way.
+      # AI analysis uses GitHub Models (models.github.ai), authenticated
+      # with the workflow's own automatic token - no separate API key,
+      # account, or billing setup. github.token is passed to only this one
+      # step (least privilege), not the whole job. Informational only: it
+      # never runs when tests pass, and continue-on-error here means a
+      # GitHub Models outage/rate limit can't add a second, unrelated
+      # failure reason - the job still fails for the original E2E reason
+      # via the gate step below either way.
+      #
+      # AI_MODEL can be overridden per-run without touching source code,
+      # e.g. `env: AI_MODEL: openai/gpt-4o-mini` - see scripts/ai/config.js
+      # for the default and the full model-id catalog reference.
       - name: AI failure analysis
         if: steps.run_tests.outcome == 'failure'
         continue-on-error: true
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: npm run ai:analyze
 
       # Only ever runs for pull_request (never push/workflow_dispatch, where
       # there is no PR to comment on) and only once tests have failed.
       #
-      # Fork PRs: custom secrets (OPENAI_API_KEY) are not passed to runs
-      # triggered by a pull_request from a forked repository, so the step
-      # above will have failed to produce reports/ai/ai-report.json - this
-      # step detects that and skips (see format-pr-comment.js's caller
-      # below), rather than posting an empty/broken comment. Separately,
-      # GitHub also forces GITHUB_TOKEN to read-only for fork-triggered
-      # pull_request runs regardless of the `permissions:` block above, so
-      # even if a report did exist, the comment API call would 403 - that
-      # is caught and logged as a warning, not a job failure. Intentionally
-      # not switching to pull_request_target to work around either of
-      # these: that trigger runs workflow code from the base branch against
-      # the fork's PR content, which is a materially different trust
-      # boundary and out of scope for this change.
+      # Fork PRs: GitHub Models access itself works the same for fork and
+      # same-repo PRs (models: read is already read-only, so it's unaffected
+      # by GitHub's fork-PR token downgrade - see the permissions comment
+      # above) - so reports/ai/ai-report.json should still exist even for a
+      # fork PR. What's blocked for forks is posting the *comment*: GitHub
+      # forces GITHUB_TOKEN to read-only for fork-triggered pull_request
+      # runs regardless of the `permissions:` block above, so the
+      # pull-requests: write comment API call would 403 - that's caught and
+      # logged as a warning, not a job failure. Intentionally not switching
+      # to pull_request_target to work around this: that trigger runs
+      # workflow code from the base branch against the fork's PR content,
+      # which is a materially different trust boundary and out of scope for
+      # this change. Security wins over getting a comment on every fork PR.
       - name: Comment AI analysis on PR
         if: steps.run_tests.outcome == 'failure' && github.event_name == 'pull_request'
         continue-on-error: true
@@ -132,7 +144,7 @@ jobs:
 
             const reportPath = path.join(process.env.GITHUB_WORKSPACE, 'reports', 'ai', 'ai-report.json');
             if (!fs.existsSync(reportPath)) {
-              core.notice('No reports/ai/ai-report.json (AI analysis did not produce output - e.g. no OPENAI_API_KEY on a fork PR, or the OpenAI call failed) - skipping PR comment.');
+              core.notice('No reports/ai/ai-report.json (AI analysis did not produce output - e.g. GitHub Models was unavailable, or the run failed before this step) - skipping PR comment.');
               return;
             }
 

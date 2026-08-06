@@ -2,14 +2,16 @@
 /**
  * QA Failure Analyzer
  *
- * reports/ai/context.json -> OpenAI API (Structured Outputs) -> reports/ai/ai-report.json
+ * reports/ai/context.json -> GitHub Models -> reports/ai/ai-report.json
  *
  * Security:
- *  - The API key is read ONLY from process.env.OPENAI_API_KEY. It is never
- *    hardcoded, never written to a file, and never logged (including in
- *    error paths - only err.status/err.message are surfaced, never raw
- *    error/request objects).
- *  - Makes exactly one outbound call, to the OpenAI API, with exactly the
+ *  - The auth token is read ONLY from process.env.GITHUB_TOKEN - the
+ *    automatic per-run GitHub Actions token (or a developer's own token
+ *    when running locally), never a separate paid-API credential. It is
+ *    never hardcoded, never written to a file, and never logged (including
+ *    in error paths - only status/message are surfaced, never raw
+ *    error/request/response objects).
+ *  - Makes exactly one outbound call, to GitHub Models, with exactly the
  *    contents of context.json (already scoped/size-capped by
  *    scripts/ai/collect-context.js). No other network access.
  */
@@ -18,18 +20,13 @@
 
 const fs = require("fs");
 const path = require("path");
-const OpenAI = require("openai");
-const { CLASSIFICATIONS, buildSystemPrompt, buildUserPrompt, RESPONSE_SCHEMA } = require("./qa-agent-prompt");
+const { MODEL, GITHUB_MODELS_ENDPOINT } = require("./config");
+const { CLASSIFICATIONS, buildSystemPrompt, buildUserPrompt } = require("./qa-agent-prompt");
 
 const ROOT = path.resolve(__dirname, "..", "..");
 const CONTEXT_FILE = path.join(ROOT, "reports", "ai", "context.json");
 const HISTORY_FILE = path.join(ROOT, "reports", "ai", "history.json");
 const OUTPUT_FILE = path.join(ROOT, "reports", "ai", "ai-report.json");
-
-// Single source of truth for the model name - do not reference a model
-// string anywhere else in this file or in qa-agent-prompt.js.
-const DEFAULT_MODEL = "gpt-4o-mini";
-const MODEL = process.env.OPENAI_MODEL || DEFAULT_MODEL;
 
 class AnalyzerError extends Error {}
 
@@ -79,14 +76,18 @@ function readHistory() {
   };
 }
 
-function requireApiKey() {
-  const key = process.env.OPENAI_API_KEY;
-  if (!key || !key.trim()) {
+// GITHUB_TOKEN is present automatically in every GitHub Actions run
+// (scoped by the workflow's `permissions:` block) - this only fails
+// locally, where a developer hasn't exported one themselves.
+function requireGitHubToken() {
+  const token = process.env.GITHUB_TOKEN;
+  if (!token || !token.trim()) {
     throw new AnalyzerError(
-      "OPENAI_API_KEY environment variable is not set. Set it (e.g. as a CI/repo secret) before running npm run ai:analyze."
+      "GitHub Models authentication token is missing. Set GITHUB_TOKEN before running npm run ai:analyze " +
+        "(in CI this is automatic via `env: GITHUB_TOKEN: ${{ github.token }}`; locally, export your own token if you want to run this)."
     );
   }
-  return key;
+  return token;
 }
 
 function pickSourceContext(context) {
@@ -104,10 +105,12 @@ function pickSourceContext(context) {
 }
 
 // --- response validation --------------------------------------------------
-// Structured Outputs makes the model's JSON *shape* reliable, but we still
-// validate the actual values (enum membership, confidence range, non-empty
-// strings) before ever writing ai-report.json - "invalid structure" from
-// the model should fail loudly, not produce a malformed artifact.
+// No structured-output schema is enforced on the request (see
+// qa-agent-prompt.js) - GitHub Models proxies multiple model families and
+// strict JSON-schema constraints aren't guaranteed to be honored
+// identically by all of them. So the model's JSON shape is NOT trusted:
+// every value is validated by hand (enum membership, confidence range,
+// non-empty strings) before ever writing ai-report.json.
 
 function isFiniteNumberInRange(n, min, max) {
   return typeof n === "number" && Number.isFinite(n) && n >= min && n <= max;
@@ -166,81 +169,100 @@ function recommendsArbitraryWait(item) {
 
 // Retried: rate limiting, server-side/gateway errors, and anything that
 // never got an HTTP response at all (network blip, timeout). NOT retried:
-// 4xx errors like 401 (bad key) or 400 (bad request) - those fail exactly
-// the same way every time, so retrying would only add latency before the
-// same clear error.
+// 4xx errors like 401/403 (bad/insufficient token) or 400 (bad request) -
+// those fail exactly the same way every time, so retrying would only add
+// latency before the same clear error.
 const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504]);
 
-function isRetryableError(err) {
-  if (!err) return false;
-  if (typeof err.status === "number") return RETRYABLE_STATUS_CODES.has(err.status);
-  return true;
+function isRetryableStatus(status) {
+  return RETRYABLE_STATUS_CODES.has(status);
 }
 
 function defaultSleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// `client`/`sleep` are injectable for testing; production calls always use
-// the real OpenAI client and a real timer.
-async function callOpenAI(
-  apiKey,
-  context,
-  { client, maxAttempts = 3, retryDelaysMs = [500, 1500], sleep = defaultSleep } = {}
-) {
-  const openai = client || new OpenAI({ apiKey });
+// Models occasionally wrap JSON in a markdown code fence despite being
+// told not to (see the OUTPUT FORMAT instruction in qa-agent-prompt.js).
+// Strip that defensively rather than failing outright - the prompt is the
+// primary control, this is the fallback.
+function stripCodeFences(text) {
+  const trimmed = text.trim();
+  const fenceMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return fenceMatch ? fenceMatch[1].trim() : trimmed;
+}
 
+// `fetchImpl`/`sleep` are injectable for testing; production calls always
+// use the real global fetch and a real timer.
+async function callGitHubModels(
+  token,
+  context,
+  { fetchImpl = fetch, maxAttempts = 3, retryDelaysMs = [500, 1500], sleep = defaultSleep } = {}
+) {
   let response;
   let lastErr;
+
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let res;
     try {
-      response = await openai.chat.completions.create({
-        model: MODEL,
-        temperature: 0,
-        messages: [
-          { role: "system", content: buildSystemPrompt() },
-          { role: "user", content: buildUserPrompt(context) },
-        ],
-        response_format: {
-          type: "json_schema",
-          json_schema: {
-            name: "qa_failure_analysis",
-            strict: true,
-            schema: RESPONSE_SCHEMA,
-          },
+      res = await fetchImpl(GITHUB_MODELS_ENDPOINT, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
         },
+        body: JSON.stringify({
+          model: MODEL,
+          temperature: 0,
+          messages: [
+            { role: "system", content: buildSystemPrompt() },
+            { role: "user", content: buildUserPrompt(context) },
+          ],
+        }),
       });
+    } catch (err) {
+      // Never got a response at all (network blip, timeout) - worth retrying.
+      lastErr = err;
+      if (attempt === maxAttempts) break;
+      await sleep(retryDelaysMs[attempt - 1] ?? retryDelaysMs[retryDelaysMs.length - 1]);
+      continue;
+    }
+
+    if (res.ok) {
+      response = await res.json();
       lastErr = null;
       break;
-    } catch (err) {
-      lastErr = err;
-      const isLastAttempt = attempt === maxAttempts;
-      if (isLastAttempt || !isRetryableError(err)) break;
-      await sleep(retryDelaysMs[attempt - 1] ?? retryDelaysMs[retryDelaysMs.length - 1]);
     }
+
+    const statusText = res.status === 429 ? "GitHub Models rate limit reached" : res.statusText;
+    lastErr = new AnalyzerError(`GitHub Models API request failed (HTTP ${res.status}): ${statusText}`);
+    lastErr.status = res.status;
+    if (attempt === maxAttempts || !isRetryableStatus(res.status)) break;
+    await sleep(retryDelaysMs[attempt - 1] ?? retryDelaysMs[retryDelaysMs.length - 1]);
   }
 
   if (lastErr) {
     // Deliberately surface only status/message - never the raw error/request
-    // object, which could otherwise leak request metadata into CI logs.
-    const status = lastErr.status ? ` (HTTP ${lastErr.status})` : "";
-    throw new AnalyzerError(`OpenAI API request failed${status}: ${lastErr.message || "unknown error"}`);
+    // object, which could otherwise leak request metadata (including the
+    // Authorization header) into CI logs.
+    if (lastErr instanceof AnalyzerError) throw lastErr;
+    throw new AnalyzerError(`GitHub Models API request failed: ${lastErr.message || "unknown error"}`);
   }
 
   const raw = response && response.choices && response.choices[0] && response.choices[0].message.content;
   if (!raw) {
-    throw new AnalyzerError("OpenAI response did not include any content.");
+    throw new AnalyzerError("GitHub Models response did not include any content.");
   }
 
   let parsed;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(stripCodeFences(raw));
   } catch (err) {
-    throw new AnalyzerError(`OpenAI response was not valid JSON: ${err.message}`);
+    throw new AnalyzerError(`GitHub Models response was not valid JSON: ${err.message}`);
   }
 
   if (!parsed || !Array.isArray(parsed.results)) {
-    throw new AnalyzerError('OpenAI response did not match the expected schema (missing "results" array).');
+    throw new AnalyzerError('GitHub Models response did not match the expected shape (missing "results" array).');
   }
 
   return { results: parsed.results, usage: response.usage || null };
@@ -278,9 +300,9 @@ async function main() {
     return;
   }
 
-  let apiKey;
+  let token;
   try {
-    apiKey = requireApiKey();
+    token = requireGitHubToken();
   } catch (err) {
     fail(err.message);
     return;
@@ -294,7 +316,7 @@ async function main() {
 
   let results, usage;
   try {
-    ({ results, usage } = await callOpenAI(apiKey, context));
+    ({ results, usage } = await callGitHubModels(token, context));
   } catch (err) {
     fail(err.message);
     return;
@@ -302,14 +324,14 @@ async function main() {
 
   if (results.length !== failedTests.length) {
     fail(
-      `OpenAI returned ${results.length} result(s) but context.json has ${failedTests.length} failed test(s).`
+      `GitHub Models returned ${results.length} result(s) but context.json has ${failedTests.length} failed test(s).`
     );
     return;
   }
 
   const structureErrors = results.flatMap((item, i) => validateAnalysisItem(item, i));
   if (structureErrors.length > 0) {
-    fail(`OpenAI response failed validation:\n  - ${structureErrors.join("\n  - ")}`);
+    fail(`GitHub Models response failed validation:\n  - ${structureErrors.join("\n  - ")}`);
     return;
   }
 
@@ -353,10 +375,11 @@ if (require.main === module) {
 }
 
 module.exports = {
-  callOpenAI,
+  callGitHubModels,
   validateAnalysisItem,
   recommendsArbitraryWait,
-  isRetryableError,
+  isRetryableStatus,
+  stripCodeFences,
   pickSourceContext,
   readHistory,
   MODEL,
