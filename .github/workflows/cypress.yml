@@ -13,30 +13,18 @@ jobs:
   cypress-tests:
     name: Cypress - ${{ matrix.browser }}
     runs-on: ubuntu-latest
+    # cypress/included bundles Node, npm and matching pre-installed browser
+    # binaries for the same Cypress version declared in package.json, so no
+    # separate Node setup or binary caching step is needed.
+    container: cypress/included:15.19.0
     strategy:
       fail-fast: false
       matrix:
-        browser: [chrome, firefox]
+        browser: [chrome, firefox, edge]
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: 20
-          cache: npm
-
-      # setup-node's npm cache only covers package downloads, not the
-      # separate ~200 MB Cypress binary that npm's postinstall step fetches.
-      - name: Cache Cypress binary
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/Cypress
-          key: cypress-binary-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            cypress-binary-${{ runner.os }}-
 
       - name: Install dependencies
         run: npm ci
