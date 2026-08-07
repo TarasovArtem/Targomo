@@ -5,13 +5,13 @@
  * handling) so the persona, classification rules, and expected JSON shape
  * can be reviewed/edited as a single unit.
  *
- * No provider-specific structured-output schema is defined here: GitHub
- * Models proxies multiple model families (OpenAI, Meta, Mistral, ...) via
- * AI_MODEL (see config.js), and strict JSON-schema-constrained responses
- * aren't guaranteed to be honored identically across all of them. Instead,
- * the prompt itself demands raw JSON (see the instruction below), and
+ * No provider-specific structured-output schema is defined here: the AI
+ * provider is swappable (see scripts/ai/providers/), and strict
+ * JSON-schema-constrained responses aren't guaranteed to be honored
+ * identically across different providers/model families. Instead, the
+ * prompt itself demands raw JSON (see the instruction below), and
  * analyze-failure.js validates the parsed result by hand regardless of
- * what the model actually returned.
+ * what the provider actually returned.
  */
 
 "use strict";

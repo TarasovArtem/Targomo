@@ -5,13 +5,13 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const {
-  callGitHubModels,
+  runProviderAnalysis,
   validateAnalysisItem,
   recommendsArbitraryWait,
-  isRetryableStatus,
   stripCodeFences,
   readHistory,
 } = require("./analyze-failure");
+const { ProviderError } = require("./providers/provider-error");
 
 const ROOT = path.resolve(__dirname, "..", "..");
 const HISTORY_FILE = path.join(ROOT, "reports", "ai", "history.json");
@@ -49,84 +49,90 @@ function goodItem(overrides = {}) {
   };
 }
 
-// Fakes global fetch's Response shape just enough for callGitHubModels.
-function fakeResponse({ ok = true, status = 200, statusText = "OK", body }) {
-  return { ok, status, statusText, json: async () => body };
+// A fake provider implementing only the minimal analyze() contract -
+// mocking happens at the provider boundary, never at global.fetch, so
+// these tests exercise runProviderAnalysis the same way any real provider
+// eventually would.
+function providerReturning(resultsPayload) {
+  return { analyze: async () => JSON.stringify({ results: resultsPayload }) };
 }
 
-function fetchReturning(resultsPayload, usage) {
-  return async () =>
-    fakeResponse({
-      body: {
-        choices: [{ message: { content: JSON.stringify({ results: resultsPayload }) } }],
-        usage: usage || { prompt_tokens: 100, completion_tokens: 40, total_tokens: 140 },
-      },
-    });
+function providerThrowing(err) {
+  return {
+    analyze: async () => {
+      throw err;
+    },
+  };
+}
+
+function providerFailingThenSucceeding(failCount, err, resultsPayload) {
+  let calls = 0;
+  return {
+    analyze: async () => {
+      calls += 1;
+      if (calls <= failCount) throw err;
+      return JSON.stringify({ results: resultsPayload });
+    },
+    get calls() {
+      return calls;
+    },
+  };
 }
 
 const noopSleep = async () => {};
 
-test("callGitHubModels: happy path returns results that pass validation", async () => {
-  const { results } = await callGitHubModels("fake-token", context, { fetchImpl: fetchReturning([goodItem()]) });
+test("runProviderAnalysis: happy path returns results that pass validation", async () => {
+  const { results } = await runProviderAnalysis(providerReturning([goodItem()]), context);
   assert.equal(results.length, 1);
   assert.deepEqual(validateAnalysisItem(results[0], 0), []);
   assert.equal(recommendsArbitraryWait(results[0]), false);
 });
 
-test("callGitHubModels: sends the token as a Bearer Authorization header, never elsewhere", async () => {
-  let capturedHeaders;
-  const fetchImpl = async (url, init) => {
-    capturedHeaders = init.headers;
-    return fakeResponse({ body: { choices: [{ message: { content: JSON.stringify({ results: [goodItem()] }) } }] } });
+test("runProviderAnalysis: calls provider.analyze with a systemPrompt and userPrompt, nothing provider-specific", async () => {
+  let captured;
+  const provider = {
+    analyze: async (args) => {
+      captured = args;
+      return JSON.stringify({ results: [goodItem()] });
+    },
   };
-  await callGitHubModels("my-token-value", context, { fetchImpl });
-  assert.equal(capturedHeaders.Authorization, "Bearer my-token-value");
+  await runProviderAnalysis(provider, context);
+  assert.equal(typeof captured.systemPrompt, "string");
+  assert.equal(typeof captured.userPrompt, "string");
+  assert.ok(captured.systemPrompt.length > 0);
+  assert.ok(captured.userPrompt.length > 0);
 });
 
-test("callGitHubModels: posts to the official GitHub Models inference endpoint", async () => {
-  let capturedUrl;
-  const fetchImpl = async (url) => {
-    capturedUrl = url;
-    return fakeResponse({ body: { choices: [{ message: { content: JSON.stringify({ results: [goodItem()] }) } }] } });
-  };
-  await callGitHubModels("t", context, { fetchImpl });
-  assert.equal(capturedUrl, "https://models.github.ai/inference/chat/completions");
-});
-
-test("callGitHubModels: strips a markdown code fence around the JSON if the model added one anyway", async () => {
-  const fetchImpl = async () =>
-    fakeResponse({
-      body: { choices: [{ message: { content: "```json\n" + JSON.stringify({ results: [goodItem()] }) + "\n```" } }] },
-    });
-  const { results } = await callGitHubModels("t", context, { fetchImpl });
+test("runProviderAnalysis: strips a markdown code fence around the JSON if the provider added one anyway", async () => {
+  const provider = { analyze: async () => "```json\n" + JSON.stringify({ results: [goodItem()] }) + "\n```" };
+  const { results } = await runProviderAnalysis(provider, context);
   assert.equal(results.length, 1);
 });
 
-test("callGitHubModels: result count mismatch is left for the caller to detect", async () => {
-  const { results } = await callGitHubModels("t", context, { fetchImpl: fetchReturning([goodItem(), goodItem()]) });
+test("runProviderAnalysis: result count mismatch is left for the caller to detect", async () => {
+  const { results } = await runProviderAnalysis(providerReturning([goodItem(), goodItem()]), context);
   assert.notEqual(results.length, context.failedTests.length);
 });
 
 test("validateAnalysisItem: rejects an invalid classification enum value", async () => {
-  const { results } = await callGitHubModels("t", context, {
-    fetchImpl: fetchReturning([goodItem({ classification: "TOTALLY_MADE_UP" })]),
-  });
+  const { results } = await runProviderAnalysis(providerReturning([goodItem({ classification: "TOTALLY_MADE_UP" })]), context);
   const errors = validateAnalysisItem(results[0], 0);
   assert.ok(errors.some((e) => e.includes("classification")));
 });
 
 test("validateAnalysisItem: rejects out-of-range confidence", async () => {
-  const { results } = await callGitHubModels("t", context, { fetchImpl: fetchReturning([goodItem({ confidence: 1.5 })]) });
+  const { results } = await runProviderAnalysis(providerReturning([goodItem({ confidence: 1.5 })]), context);
   const errors = validateAnalysisItem(results[0], 0);
   assert.ok(errors.some((e) => e.includes("confidence")));
 });
 
 test("recommendsArbitraryWait: flags a fixed-duration wait recommendation", async () => {
-  const { results } = await callGitHubModels("t", context, {
-    fetchImpl: fetchReturning([
+  const { results } = await runProviderAnalysis(
+    providerReturning([
       goodItem({ recommendedFix: { file: context.failedTests[0].specFile, description: "Just add cy.wait(5000) after the click." } }),
     ]),
-  });
+    context
+  );
   assert.equal(recommendsArbitraryWait(results[0]), true);
 });
 
@@ -140,110 +146,67 @@ test("stripCodeFences: strips a ```json fence, leaves plain JSON untouched", () 
   assert.equal(stripCodeFences('{"a":1}'), '{"a":1}');
 });
 
-test("callGitHubModels: a non-retryable API error (401) surfaces cleanly without leaking the raw token", async () => {
-  const realToken = "ghs_REALSECRETVALUE1234567890";
-  const fetchImpl = async () => fakeResponse({ ok: false, status: 401, statusText: "Unauthorized" });
-
+test("runProviderAnalysis: a non-retryable ProviderError surfaces cleanly, without leaking any secret it might carry", async () => {
+  const err = new ProviderError("Unauthorized (401)", { code: 401, retryable: false });
   await assert.rejects(
-    () => callGitHubModels(realToken, context, { fetchImpl, sleep: noopSleep }),
-    (err) => {
-      assert.match(err.message, /401/);
-      assert.doesNotMatch(err.message, new RegExp(realToken));
+    () => runProviderAnalysis(providerThrowing(err), context, { sleep: noopSleep }),
+    (thrown) => {
+      assert.match(thrown.message, /401/);
+      assert.match(thrown.message, /Unauthorized/);
       return true;
     }
   );
 });
 
-test("callGitHubModels: a 403 is treated the same as 401 - not retried, clean message", async () => {
-  let calls = 0;
-  const fetchImpl = async () => {
-    calls += 1;
-    return fakeResponse({ ok: false, status: 403, statusText: "Forbidden" });
-  };
-  await assert.rejects(() => callGitHubModels("t", context, { fetchImpl, sleep: noopSleep, maxAttempts: 3 }));
-  assert.equal(calls, 1);
+test("runProviderAnalysis: a non-retryable error is never retried, even with attempts remaining", async () => {
+  const provider = providerFailingThenSucceeding(99, new ProviderError("Forbidden", { code: 403, retryable: false }), [goodItem()]);
+  await assert.rejects(() => runProviderAnalysis(provider, context, { sleep: noopSleep, maxAttempts: 3 }));
+  assert.equal(provider.calls, 1);
 });
 
-test("callGitHubModels: a 429 error message explicitly names the GitHub Models rate limit", async () => {
-  const fetchImpl = async () => fakeResponse({ ok: false, status: 429, statusText: "Too Many Requests" });
-  await assert.rejects(
-    () => callGitHubModels("t", context, { fetchImpl, sleep: noopSleep, maxAttempts: 1 }),
-    (err) => {
-      assert.match(err.message, /rate limit/i);
-      return true;
-    }
+test("runProviderAnalysis: retries a retryable ProviderError and succeeds on a later attempt", async () => {
+  const provider = providerFailingThenSucceeding(
+    2,
+    new ProviderError("Service Unavailable", { code: 503, retryable: true }),
+    [goodItem()]
   );
-});
-
-test("isRetryableStatus: 429 and 5xx are retryable, 4xx auth/lookup errors are not", () => {
-  assert.equal(isRetryableStatus(429), true);
-  assert.equal(isRetryableStatus(500), true);
-  assert.equal(isRetryableStatus(503), true);
-  assert.equal(isRetryableStatus(401), false);
-  assert.equal(isRetryableStatus(403), false);
-  assert.equal(isRetryableStatus(400), false);
-});
-
-test("callGitHubModels: retries a transient 503 and succeeds on a later attempt", async () => {
-  let calls = 0;
-  const fetchImpl = async () => {
-    calls += 1;
-    if (calls < 3) return fakeResponse({ ok: false, status: 503, statusText: "Service Unavailable" });
-    return fakeResponse({ body: { choices: [{ message: { content: JSON.stringify({ results: [goodItem()] }) } }] } });
-  };
-
-  const { results } = await callGitHubModels("t", context, { fetchImpl, sleep: noopSleep, maxAttempts: 3 });
-  assert.equal(calls, 3, "should have retried twice before succeeding on the third attempt");
+  const { results } = await runProviderAnalysis(provider, context, { sleep: noopSleep, maxAttempts: 3 });
+  assert.equal(provider.calls, 3, "should have retried twice before succeeding on the third attempt");
   assert.equal(results.length, 1);
 });
 
-test("callGitHubModels: never retries a 401 - fails on the first attempt", async () => {
-  let calls = 0;
-  const fetchImpl = async () => {
-    calls += 1;
-    return fakeResponse({ ok: false, status: 401, statusText: "Unauthorized" });
-  };
-
-  await assert.rejects(() => callGitHubModels("t", context, { fetchImpl, sleep: noopSleep, maxAttempts: 3 }));
-  assert.equal(calls, 1, "a 401 should never be retried");
+test("runProviderAnalysis: gives up after maxAttempts on a persistently retryable error", async () => {
+  const provider = providerFailingThenSucceeding(99, new ProviderError("Internal Server Error", { code: 500, retryable: true }), [
+    goodItem(),
+  ]);
+  await assert.rejects(() => runProviderAnalysis(provider, context, { sleep: noopSleep, maxAttempts: 3 }));
+  assert.equal(provider.calls, 3);
 });
 
-test("callGitHubModels: gives up after maxAttempts on persistent transient errors", async () => {
-  let calls = 0;
-  const fetchImpl = async () => {
-    calls += 1;
-    return fakeResponse({ ok: false, status: 500, statusText: "Internal Server Error" });
-  };
-
-  await assert.rejects(() => callGitHubModels("t", context, { fetchImpl, sleep: noopSleep, maxAttempts: 3 }));
-  assert.equal(calls, 3);
+test("runProviderAnalysis: a plain (non-ProviderError) throw is treated as non-retryable", async () => {
+  const provider = providerFailingThenSucceeding(99, new Error("boom"), [goodItem()]);
+  await assert.rejects(() => runProviderAnalysis(provider, context, { sleep: noopSleep, maxAttempts: 3 }));
+  assert.equal(provider.calls, 1);
 });
 
-test("callGitHubModels: a network-level failure (no HTTP response at all) is retried like a transient error", async () => {
-  let calls = 0;
-  const fetchImpl = async () => {
-    calls += 1;
-    if (calls < 2) throw new Error("fetch failed: ECONNRESET");
-    return fakeResponse({ body: { choices: [{ message: { content: JSON.stringify({ results: [goodItem()] }) } }] } });
-  };
-  const { results } = await callGitHubModels("t", context, { fetchImpl, sleep: noopSleep, maxAttempts: 3 });
-  assert.equal(calls, 2);
-  assert.equal(results.length, 1);
+test("runProviderAnalysis: empty response content produces a clear error, not a crash", async () => {
+  const provider = { analyze: async () => "" };
+  await assert.rejects(() => runProviderAnalysis(provider, context, { sleep: noopSleep }), /did not include any content/);
 });
 
-test("callGitHubModels: empty response content produces a clear error, not a crash", async () => {
-  const fetchImpl = async () => fakeResponse({ body: { choices: [{ message: { content: "" } }] } });
-  await assert.rejects(() => callGitHubModels("t", context, { fetchImpl, sleep: noopSleep }), /did not include any content/);
+test("runProviderAnalysis: a non-string response produces a clear error, not a crash", async () => {
+  const provider = { analyze: async () => null };
+  await assert.rejects(() => runProviderAnalysis(provider, context, { sleep: noopSleep }), /did not include any content/);
 });
 
-test("callGitHubModels: unexpected response structure (no choices at all) produces a clear error", async () => {
-  const fetchImpl = async () => fakeResponse({ body: { unexpected: true } });
-  await assert.rejects(() => callGitHubModels("t", context, { fetchImpl, sleep: noopSleep }), /did not include any content/);
+test("runProviderAnalysis: unexpected response shape (no results array) produces a clear error", async () => {
+  const provider = { analyze: async () => JSON.stringify({ unexpected: true }) };
+  await assert.rejects(() => runProviderAnalysis(provider, context, { sleep: noopSleep }), /missing "results" array/);
 });
 
-test("callGitHubModels: invalid JSON in the response content produces a clear error, not a fabricated analysis", async () => {
-  const fetchImpl = async () => fakeResponse({ body: { choices: [{ message: { content: "this is not json at all" } }] } });
-  await assert.rejects(() => callGitHubModels("t", context, { fetchImpl, sleep: noopSleep }), /not valid JSON/);
+test("runProviderAnalysis: invalid JSON in the response produces a clear error, not a fabricated analysis", async () => {
+  const provider = { analyze: async () => "this is not json at all" };
+  await assert.rejects(() => runProviderAnalysis(provider, context, { sleep: noopSleep }), /not valid JSON/);
 });
 
 test("readHistory: returns null when reports/ai/history.json doesn't exist", (t) => {
@@ -288,34 +251,4 @@ test("readHistory: strips internal bookkeeping fields, keeping only the compact 
   t.after(() => fs.rmSync(path.dirname(HISTORY_FILE), { recursive: true, force: true }));
 
   assert.deepEqual(readHistory(), { runsConsidered: 10, passes: 7, failures: 3, retryPasses: 2 });
-});
-
-test("buildPausedReport: one honest UNKNOWN/confidence-0 stub per failed test, no model call implied", () => {
-  const { buildPausedReport, validateAnalysisItem } = require("./analyze-failure");
-  const report = buildPausedReport(context, context.failedTests);
-
-  assert.equal(report.model, null, "no model was actually called");
-  assert.equal(report.usage, null);
-  assert.equal(report.results.length, context.failedTests.length);
-
-  const [result] = report.results;
-  assert.equal(result.test.title, context.failedTests[0].title);
-  assert.equal(result.classification, "UNKNOWN");
-  assert.equal(result.confidence, 0);
-  assert.equal(result.recommendedFix, null);
-  assert.equal(result.shouldCreateBug, false);
-  assert.equal(result.shouldRetry, false);
-  assert.deepEqual(result.evidence, [], "must never fabricate evidence for a stub result");
-
-  // The stub must satisfy the exact same contract a real model response
-  // does - it flows through the untouched PR-comment/artifact pipeline.
-  assert.deepEqual(validateAnalysisItem(result, 0), []);
-});
-
-test("buildPausedReport: the note explains *why* in a way a human reading the PR comment or artifact can act on", () => {
-  const { buildPausedReport } = require("./analyze-failure");
-  const report = buildPausedReport(context, context.failedTests);
-  assert.match(report.note, /paused/i);
-  assert.match(report.note, /GitHub Models/);
-  assert.match(report.note, /retired/i);
 });

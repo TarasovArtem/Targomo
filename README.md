@@ -76,7 +76,9 @@ The pipeline:
 
 ### QA Agent (AI failure analysis)
 
-> **AI analysis is currently paused.** GitHub Models was [fully retired by GitHub on 2026-07-30](https://github.blog/changelog/2026-07-30-github-models-is-now-retired/) - confirmed live, its inference API now returns `410 Gone` for every request. `scripts/ai/analyze-failure.js` detects this (`PROVIDER_PAUSED_REASON` in [scripts/ai/config.js](scripts/ai/config.js)) and short-circuits before making any network call, writing an honest `UNKNOWN`/0%-confidence stub result instead - visible in the artifact and PR comment - rather than silently failing or retrying a dead endpoint. Everything else below (context collection, flaky-history, artifacts, PR comments) still runs normally; only the actual model call is stopped, pending a replacement provider.
+The QA Agent's AI backend is a swappable **provider abstraction** (`scripts/ai/providers/`), selected at runtime via the `AI_PROVIDER` environment variable. `analyze-failure.js` itself never knows an endpoint URL, request/header format, or auth scheme for any provider - that all lives behind a single `provider.analyze({ systemPrompt, userPrompt })` contract.
+
+Right now the only implemented provider is `MockProvider` (`AI_PROVIDER=mock`, the default): it makes no network call and returns an honest, schema-valid `UNKNOWN`/50%-confidence stub result - visible in the artifact and PR comment - rather than a real analysis. This is a deliberate choice, not a bug: the project previously called [GitHub Models](https://docs.github.com/en/github-models), which was [fully retired by GitHub on 2026-07-30](https://github.blog/changelog/2026-07-30-github-models-is-now-retired/) (confirmed live - its inference API returned `410 Gone` for every request). Rather than silently retrying a dead endpoint or connecting a new paid provider without being asked, the AI layer was refactored to this provider-neutral shape first. Adding a real provider later (e.g. `scripts/ai/providers/groq-provider.js`) is a change scoped to `scripts/ai/providers/` plus `AI_PROVIDER`/`AI_MODEL`/`AI_API_KEY` - it does not touch context collection, prompts, PR comments, or the workflow.
 
 When an E2E job fails, a QA Agent step analyzes the failure and classifies it as `PRODUCT_BUG`, `TEST_BUG`, `FLAKY_TEST`, `ENVIRONMENT`, `EXTERNAL_DEPENDENCY`, or `UNKNOWN`, before recommending a fix. It never changes whether the job passes or fails - it's a diagnostic layer on top of the real test result, not a gate.
 
@@ -92,7 +94,7 @@ E2E tests
         │  failed test names, errors, relevant spec/page-object source,
         │  browser, known project constraints - no secrets, no full repo dump
         ▼
-   GitHub Models (scripts/ai/analyze-failure.js)
+   AI provider (scripts/ai/analyze-failure.js -> scripts/ai/providers/)
         │  QA root-cause analysis
         ▼
    reports/ai/ai-report.json
@@ -104,21 +106,14 @@ E2E tests
    workflow remains FAILED
 ```
 
-**No separate OpenAI API key or account is needed.** The QA Agent calls [GitHub Models](https://docs.github.com/en/github-models) using the workflow's own automatically-generated `GITHUB_TOKEN` - the same token every GitHub Actions run already has, authenticated with `Authorization: Bearer <token>`. The only setup required is the workflow permission:
-
-```yaml
-permissions:
-  models: read
-```
-
-The transport code (`callGitHubModels` in `analyze-failure.js`) is intentionally left in place and tested against a mocked `fetch` - reactivating AI analysis with a replacement provider should only require updating `GITHUB_MODELS_ENDPOINT`/`PROVIDER_PAUSED_REASON` in `scripts/ai/config.js` (and the request/response shape in `callGitHubModels` if the new provider isn't Chat-Completions-compatible), not rebuilding the pipeline around it.
+**No AI API key or account is needed for the default (`mock`) provider.** CI runs the workflow's "Run AI failure analysis" step with `AI_PROVIDER: mock`, which needs no credentials and no GitHub Actions permission of its own (no network/API call is made at all). `GITHUB_TOKEN` is still used elsewhere in the pipeline (flaky-test history via the Actions API, posting PR comments) - just never as an AI inference credential.
 
 Run it locally:
 
 ```
 npm run chrome        # produces reports/cypress/*.json
 npm run ai:collect     # produces reports/ai/context.json
-npm run ai:analyze     # produces reports/ai/ai-report.json (currently a paused-provider stub, no token needed)
+AI_PROVIDER=mock npm run ai:analyze   # produces reports/ai/ai-report.json (mock provider, no network call)
 ```
 
-`AI_MODEL` can be set to any provider-specific model id without touching source code - see [scripts/ai/config.js](scripts/ai/config.js).
+`AI_PROVIDER` (default `mock`), `AI_MODEL`, and `AI_API_KEY` are read from `scripts/ai/config.js`; an unrecognized `AI_PROVIDER` value throws a clear error rather than silently falling back to a real provider.
