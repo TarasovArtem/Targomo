@@ -36,6 +36,7 @@ const { CLASSIFICATIONS, buildSystemPrompt, buildUserPrompt } = require("./qa-ag
 const { createProvider } = require("./providers");
 const { normalizeProviderError } = require("./providers/provider-error");
 const { validateProvider, validateProviderResponse } = require("./providers/provider-contract");
+const { applyAgentPolicy } = require("./agent-policy");
 
 const ROOT = path.resolve(__dirname, "..", "..");
 const CONTEXT_FILE = path.join(ROOT, "reports", "ai", "context.json");
@@ -271,8 +272,21 @@ async function buildFailureReport(context, { provider = createProvider(), histor
     throw new AnalyzerError(`AI provider response failed validation:\n  - ${structureErrors.join("\n  - ")}`);
   }
 
+  // LLM proposes, application policy decides (see scripts/ai/agent-policy.js):
+  // only after this point do "results" reflect what the application
+  // actually decided is allowed, not just what the provider recommended.
+  // Applied to every result, not just the first - a report can cover more
+  // than one failed test. Logged here (not inside the pure policy module
+  // itself) only when an intervention actually happened, to avoid noise.
+  const policySafeResults = results.map(applyAgentPolicy);
+  policySafeResults.forEach((item, i) => {
+    if (item.policy.adjusted) {
+      console.log(`[ai:policy] Overrode shouldCreateBug=true for classification ${item.classification} (results[${i}]).`);
+    }
+  });
+
   const warnings = [];
-  results.forEach((item, i) => {
+  policySafeResults.forEach((item, i) => {
     if (recommendsArbitraryWait(item)) {
       warnings.push(
         `results[${i}] (${(item.test && item.test.title) || "unknown test"}) recommends a fixed-duration wait; review before applying - prefer deterministic synchronization.`
@@ -296,7 +310,7 @@ async function buildFailureReport(context, { provider = createProvider(), histor
     // traceability - not the raw per-run data (there isn't any to keep;
     // collect-history.js never persists more than these aggregates).
     history,
-    results,
+    results: policySafeResults,
     warnings,
   };
 }
