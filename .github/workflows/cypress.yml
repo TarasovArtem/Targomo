@@ -27,6 +27,45 @@ permissions:
   pull-requests: write
 
 jobs:
+  # Pure-JS tests for scripts/ai/ (provider contract, MockProvider,
+  # GroqProvider against a fake fetch, retry/error normalization, prompt
+  # building, etc.) - see package.json's test:unit script for the exact
+  # file glob. Deliberately its own job, not a step inside cypress-tests:
+  # it needs no browser, no live app, and no `needs:` on the Cypress
+  # matrix - it tests scripts/ai/ in isolation, so it starts immediately
+  # and runs in parallel with Cypress - chrome/edge. Job id/name are both
+  # fixed strings (no matrix), since branch protection's required status
+  # checks match on the exact check name.
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    # Scoped down from the workflow-level permissions block above (which
+    # exists for the Cypress jobs' GitHub Actions history/PR-comment
+    # calls) to the one thing this job actually does: read the repo to
+    # check it out. No GitHub API access, no PR comments, no secrets.
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Runs entirely offline: MockProvider makes no network requests, and
+      # GroqProvider's own tests inject a fake fetch instead of calling the
+      # real Groq API - no GROQ_API_KEY/AI_API_KEY is passed to this job,
+      # so there is nothing here to authenticate with even if a test tried
+      # to. No continue-on-error - a failing unit test must fail this job.
+      - name: Run unit tests
+        run: npm run test:unit
+
   cypress-tests:
     name: Cypress - ${{ matrix.browser }}
     runs-on: ubuntu-latest
