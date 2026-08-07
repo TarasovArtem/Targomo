@@ -322,3 +322,52 @@ test("buildFailureReport: a provider without a .name still produces a report, fa
   const report = await buildFailureReport(context, { provider, history: null });
   assert.equal(report.analysis.provider, "unknown");
 });
+
+// --- agent policy integration ----------------------------------------------
+// Proves the full pipeline - provider -> parse -> validate -> agent policy
+// -> report - actually applies scripts/ai/agent-policy.js, not just that
+// the pure function exists in isolation (see agent-policy.test.js for that).
+
+test("buildFailureReport: regression - TEST_BUG + shouldCreateBug=true from the provider is forced to false in the final report", async () => {
+  const provider = providerReturning([goodItem({ classification: "TEST_BUG", shouldCreateBug: true })]);
+  const report = await buildFailureReport(context, { provider, history: null });
+
+  const [result] = report.results;
+  assert.equal(result.classification, "TEST_BUG");
+  assert.equal(result.shouldCreateBug, false);
+  assert.equal(result.policy.adjusted, true);
+  assert.equal(result.policy.originalShouldCreateBug, true);
+});
+
+test("buildFailureReport: PRODUCT_BUG + shouldCreateBug=true from the provider is preserved in the final report", async () => {
+  const provider = providerReturning([goodItem({ classification: "PRODUCT_BUG", shouldCreateBug: true })]);
+  const report = await buildFailureReport(context, { provider, history: null });
+
+  const [result] = report.results;
+  assert.equal(result.classification, "PRODUCT_BUG");
+  assert.equal(result.shouldCreateBug, true);
+  assert.equal(result.policy.adjusted, false);
+  assert.equal(result.policy.originalShouldCreateBug, true);
+});
+
+test("buildFailureReport: policy is applied per-result, not just to the first item", async () => {
+  const multiTestContext = {
+    ...context,
+    failedTests: [
+      { ...context.failedTests[0], title: "product bug test" },
+      { ...context.failedTests[0], title: "test bug test" },
+    ],
+  };
+  const provider = providerReturning([
+    goodItem({ test: { title: "product bug test", specFile: context.failedTests[0].specFile }, classification: "PRODUCT_BUG", shouldCreateBug: true }),
+    goodItem({ test: { title: "test bug test", specFile: context.failedTests[0].specFile }, classification: "TEST_BUG", shouldCreateBug: true }),
+  ]);
+
+  const report = await buildFailureReport(multiTestContext, { provider, history: null });
+
+  assert.equal(report.results.length, 2);
+  assert.equal(report.results[0].classification, "PRODUCT_BUG");
+  assert.equal(report.results[0].shouldCreateBug, true);
+  assert.equal(report.results[1].classification, "TEST_BUG");
+  assert.equal(report.results[1].shouldCreateBug, false);
+});
