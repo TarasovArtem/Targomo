@@ -13,6 +13,12 @@ describe('Select any group of POIs from the tree component and then see them vis
     it('should select Gastronomy group of POIs from the tree component', () => {
        categories.getGastronomy().click().should('have.class', 'mat-checkbox-checked');
        map.getMap().should('be.visible').screenshot({timeout: 10000});
+       // TEMPORARY - intentional controlled failure to validate the QA
+       // Agent's first real Groq-backed analysis end-to-end (see PR #21).
+       // The map never contains this text; this assertion is wrong on
+       // purpose and will be reverted once ai-report.json/the PR comment
+       // have been reviewed.
+       map.getMap().should('contain', 'THIS_TEXT_SHOULD_NOT_EXIST');
     })
 
     it('should select sub categories Gastronomy group as restaurants of POIs from the tree component', () => {
