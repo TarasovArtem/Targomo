@@ -9,22 +9,13 @@ on:
       - main
   workflow_dispatch:
 
-# Minimal permissions for what this workflow actually does: read the repo,
-# read past workflow run/job history for flaky-test signal (actions: read),
-# and post/update a PR comment with the AI analysis. Nothing here needs
-# issues, checks, or any other write scope. AI analysis itself (see the "AI
-# failure analysis" step below) calls the external Groq API directly over
-# fetch, authenticated with its own AI_API_KEY (from the GROQ_API_KEY
-# repository secret) - not GITHUB_TOKEN - so it needs no GitHub Actions
-# permission of its own regardless of which AI_PROVIDER is configured.
-# For pull_request runs triggered by a fork, GitHub forces GITHUB_TOKEN to
-# read-only regardless of what's declared here - contents/actions are
-# already read-only so unaffected; only the pull-requests: write comment
-# step is fork-restricted (see that step below for how it's handled).
+# Safe minimal baseline: read the repo. Each job below adds only the extra
+# permission it actually needs (actions: read for cypress-tests' flaky-
+# history lookup; pull-requests: write for qa-ai-triage's PR comment) -
+# see that job's own `permissions:` block rather than a workflow-wide
+# grant every job inherits whether it needs it or not.
 permissions:
   contents: read
-  actions: read
-  pull-requests: write
 
 jobs:
   # Pure-JS tests for scripts/ai/ (provider contract, MockProvider,
@@ -69,6 +60,13 @@ jobs:
   cypress-tests:
     name: Cypress - ${{ matrix.browser }}
     runs-on: ubuntu-latest
+    # contents: read for checkout; actions: read so "Collect run history
+    # for flaky-test reasoning" (below) can query the Actions API for past
+    # workflow runs. This job no longer posts or updates PR comments (see
+    # qa-ai-triage) so it does not need pull-requests: write.
+    permissions:
+      contents: read
+      actions: read
     # cypress/included bundles Node, npm and matching pre-installed browser
     # binaries for the same Cypress version declared in package.json, so no
     # separate Node setup or binary caching step is needed.
@@ -96,7 +94,7 @@ jobs:
       # baseUrl in cypress.config.js points at the externally hosted app,
       # so there is nothing to build or serve locally before running tests.
       #
-      # continue-on-error lets the job carry on into the AI analysis steps
+      # continue-on-error lets the job carry on into the diagnostics steps
       # below instead of stopping here. steps.run_tests.outcome records the
       # real pass/fail result (unaffected by continue-on-error, which only
       # overrides .conclusion) - the "Fail job on E2E failure" step at the
@@ -106,12 +104,25 @@ jobs:
         continue-on-error: true
         run: npm run ${{ matrix.browser }}
 
-      # Everything below this point is additive failure diagnostics. None
-      # of it can turn a failed E2E run into a passing job: continue-on-error
-      # above only lets these steps execute, and steps.run_tests.outcome
-      # (not the ambient failure()/success() functions, which would already
-      # read as "success" once a continue-on-error step fails) is what the
-      # final gate step below checks.
+      # Everything below this point is additive diagnostics. None of it can
+      # turn a failed E2E run into a passing job: continue-on-error above
+      # only lets these steps execute, and steps.run_tests.outcome (not the
+      # ambient failure()/success() functions, which would already read as
+      # "success" once a continue-on-error step fails) is what the final
+      # gate step below checks.
+
+      # Machine-readable pass/fail marker for this specific browser leg,
+      # written unconditionally (always(), not just on failure) so the
+      # downstream QA AI triage job can tell "chrome passed" apart from
+      # "chrome's result is simply unknown" - see
+      # scripts/ai/aggregate-browser-context.js. Deliberately never
+      # computed by AI: it's a direct, literal read of Cypress's own
+      # recorded step outcome.
+      - name: Record browser result
+        if: always()
+        run: |
+          mkdir -p reports/ai
+          printf '{"browser": "%s", "outcome": "%s"}' "${{ matrix.browser }}" "${{ steps.run_tests.outcome }}" > reports/ai/browser-result.json
 
       - name: Collect structured failure context
         if: steps.run_tests.outcome == 'failure'
@@ -126,7 +137,7 @@ jobs:
       # a custom secret, so this runs the same for fork and same-repo PRs.
       # Entirely optional: any failure here (first-ever run, rate limit,
       # API error) writes { available: false } and this step still
-      # succeeds - "AI failure analysis" below works with or without it.
+      # succeeds - the downstream QA AI triage job works with or without it.
       - name: Collect run history for flaky-test reasoning
         if: steps.run_tests.outcome == 'failure'
         env:
@@ -134,26 +145,159 @@ jobs:
           TEST_BROWSER: ${{ matrix.browser }}
         run: npm run ai:history
 
-      # AI analysis goes through a provider-neutral abstraction (see
-      # scripts/ai/providers/) - which provider is used is selected by
-      # AI_PROVIDER, not hardcoded here. GitHub Actions uses the real Groq
-      # provider (scripts/ai/providers/groq-provider.js); local development
-      # and unit tests keep using AI_PROVIDER=mock (see README.md) - no
-      # real Groq call ever happens outside this workflow. GROQ_API_KEY is
-      # the GitHub repository secret; AI_API_KEY is the generic,
-      # provider-neutral application env var GroqProvider actually reads
-      # (see scripts/ai/config.js) - analyze-failure.js itself never learns
-      # Groq's name. Deliberately no fallback to MockProvider if
-      # GROQ_API_KEY is missing/invalid: a real-provider request that can't
-      # authenticate should fail honestly (surfacing as "AI analysis
-      # unavailable" in the artifact/PR comment via the existing
-      # continue-on-error below), not silently produce a fabricated mock
-      # analysis. Informational only: it never runs when tests pass, and
-      # continue-on-error here means an AI provider failure can't add a
-      # second, unrelated failure reason - the job still fails for the
-      # original E2E reason via the gate step below either way.
-      - name: AI failure analysis
+      - name: Upload Cypress screenshots
         if: steps.run_tests.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: cypress-screenshots-${{ matrix.browser }}
+          path: cypress/screenshots
+          if-no-files-found: ignore
+
+      - name: Upload Cypress videos
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cypress-videos-${{ matrix.browser }}
+          path: cypress/videos
+          if-no-files-found: ignore
+
+      - name: Upload structured test report
+        if: steps.run_tests.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: cypress-report-${{ matrix.browser }}
+          path: reports/cypress
+          if-no-files-found: ignore
+
+      # Browser-scoped input for the downstream QA AI triage job - NOT the
+      # final AI analysis itself (that no longer runs in this job at all,
+      # see qa-ai-triage below). Uploaded unconditionally so browser-
+      # result.json (always written above) reaches triage even for a
+      # passing browser; context.json/history.json are only ever present
+      # here when this leg actually failed, and if-no-files-found: ignore
+      # means their absence on a passing run is not an error. Artifact
+      # name is unique per matrix leg (qa-triage-input-chrome vs.
+      # qa-triage-input-edge) so the two legs' uploads can never collide.
+      - name: Upload QA triage input
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: qa-triage-input-${{ matrix.browser }}
+          path: reports/ai
+          if-no-files-found: ignore
+
+      # The one step in this job allowed to actually fail it. Everything
+      # above ran (or was skipped) without affecting job status; this is
+      # the sole source of truth for whether the job conclusion is
+      # failure, and it depends only on the original test outcome - never
+      # on whether context/history collection succeeded, failed, or was
+      # skipped, and never on the downstream AI triage job (which hasn't
+      # even started yet when this runs).
+      - name: Fail job on E2E failure
+        if: steps.run_tests.outcome == 'failure'
+        run: |
+          echo "Cypress E2E tests failed for browser '${{ matrix.browser }}'. See the report/screenshot/video artifacts (and QA AI triage, if it runs) for details."
+          exit 1
+
+  # Runs downstream of the full Cypress matrix, at most once per workflow
+  # run - the whole point of this job existing (see PR #23) is that a
+  # failure appearing in both chrome and edge must trigger exactly one
+  # real Groq request, not one per browser. `if: always()` is required
+  # here: GitHub Actions skips a downstream `needs:` job by default once
+  # any dependency job fails, and AI triage specifically needs to run
+  # *especially* when Cypress failed - so this job must always get the
+  # chance to start. The actual "is there anything worth analyzing"
+  # decision is made inside the job (aggregate-browser-context.js's
+  # shouldRunAiTriage()), never by this `if:` condition, and never by an
+  # LLM - it's a plain boolean over Cypress's own recorded outcomes.
+  #
+  # Diagnostic, not authoritative: this job is intentionally NOT part of
+  # branch protection's required checks (Cypress - chrome/edge already
+  # are). AI analysis has never been able to turn a failed Cypress run
+  # green, and that stays true here - see "Fail job on E2E failure" above,
+  # which this job has no influence over.
+  qa-ai-triage:
+    name: QA AI triage
+    needs: cypress-tests
+    if: always()
+    runs-on: ubuntu-latest
+    # contents: read for checkout; pull-requests: write to post/update the
+    # single triage PR comment below. No actions: read - this job never
+    # calls the GitHub Actions history API itself (collect-history.js only
+    # runs per-browser inside cypress-tests, unchanged by this PR).
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Each browser leg's own artifact from cypress-tests' "Upload QA
+      # triage input" step above. continue-on-error: true - a browser job
+      # that never reached its upload step (e.g. cancelled) shouldn't hard
+      # -fail triage; aggregate-browser-context.js treats a missing
+      # browser input as simply unknown for that browser, not a crash.
+      - name: Download chrome triage input
+        uses: actions/download-artifact@v7
+        continue-on-error: true
+        with:
+          name: qa-triage-input-chrome
+          path: reports/ai/browser-inputs/chrome
+
+      - name: Download edge triage input
+        uses: actions/download-artifact@v7
+        continue-on-error: true
+        with:
+          name: qa-triage-input-edge
+          path: reports/ai/browser-inputs/edge
+
+      # Reads both browsers' browser-result.json, decides whether ANY E2E
+      # failure happened, and if so, deterministically writes ONE browser's
+      # context.json/history.json to the exact paths analyze-failure.js
+      # already reads - see scripts/ai/aggregate-browser-context.js for the
+      # full "pick one, don't merge" contract. reports/ai/context.json
+      # existing afterward is this step's own signal for whether analysis
+      # is needed, exposed as a step output for the steps below.
+      - name: Aggregate browser inputs
+        id: aggregate
+        run: |
+          node scripts/ai/aggregate-browser-context.js
+          if [ -f reports/ai/context.json ]; then
+            echo "has-failures=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has-failures=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Same provider-neutral AI analysis this workflow has always run
+      # (see scripts/ai/providers/) - only its location changed: it used
+      # to run once per browser (up to 2x per workflow run), now it runs
+      # at most once, here, for whichever browser aggregate-browser-
+      # context.js selected as primary. GROQ_API_KEY is the GitHub
+      # repository secret; AI_API_KEY is the generic, provider-neutral
+      # application env var GroqProvider actually reads (see
+      # scripts/ai/config.js) - analyze-failure.js itself never learns
+      # Groq's name. Deliberately no fallback to MockProvider if
+      # GROQ_API_KEY is missing/invalid (e.g. a fork PR, where GitHub does
+      # not expose repository secrets to fork-triggered pull_request runs -
+      # AI_API_KEY simply resolves empty there): a real-provider request
+      # that can't authenticate should fail honestly (surfacing as "AI
+      # analysis unavailable" in the artifact/PR comment via
+      # continue-on-error below), not silently produce a fabricated
+      # analysis. continue-on-error: an AI provider failure is this job's
+      # own infrastructure problem, not an E2E result, and must never
+      # affect this job's conclusion or anything about Cypress's own
+      # required checks.
+      - name: AI failure analysis
+        if: steps.aggregate.outputs.has-failures == 'true'
         continue-on-error: true
         env:
           AI_PROVIDER: groq
@@ -161,20 +305,24 @@ jobs:
           AI_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: npm run ai:analyze
 
-      # Only ever runs for pull_request (never push/workflow_dispatch, where
-      # there is no PR to comment on) and only once tests have failed.
+      # Moved here unchanged from the old per-browser "Comment AI analysis
+      # on PR" step - format-pr-comment.js and pr-comment-client.js are
+      # untouched, only which browser drives the comment changed (read
+      # from ai-report.json's own sourceContext.browser, since this job
+      # isn't part of a browser matrix and has no matrix.browser of its
+      # own). At most one comment per workflow run now, for whichever
+      # browser was selected as primary.
       #
       # Fork PRs: GitHub does not expose repository secrets (GROQ_API_KEY)
       # to fork-triggered pull_request runs, so AI_API_KEY resolves empty
       # there - GroqProvider's own config validation rejects that as a
-      # CONFIGURATION error (no fallback to MockProvider), and the AI
-      # failure analysis step's continue-on-error means that shows up as
-      # "AI analysis unavailable", not a crash and not a leaked secret.
-      # Same-repo PRs get a real Groq-backed report. Either way,
-      # reports/ai/ai-report.json may or may not exist by this point - what
-      # is separately blocked for forks is posting the *comment*: GitHub
-      # forces GITHUB_TOKEN to
-      # read-only for fork-triggered pull_request runs regardless of the
+      # CONFIGURATION error (no fallback to MockProvider), and this step's
+      # continue-on-error means that shows up as "AI analysis unavailable",
+      # not a crash and not a leaked secret. Same-repo PRs get a real
+      # Groq-backed report. Either way, reports/ai/ai-report.json may or
+      # may not exist by this point - what is separately blocked for forks
+      # is posting the *comment*: GitHub forces GITHUB_TOKEN to read-only
+      # for fork-triggered pull_request runs regardless of the
       # `permissions:` block above, so the pull-requests: write comment API
       # call would 403 - that's caught and logged as a warning, not a job
       # failure. Intentionally not switching to pull_request_target to work
@@ -183,11 +331,9 @@ jobs:
       # trust boundary and out of scope for this change. Security wins over
       # getting a comment on every fork PR.
       - name: Comment AI analysis on PR
-        if: steps.run_tests.outcome == 'failure' && github.event_name == 'pull_request'
+        if: steps.aggregate.outputs.has-failures == 'true' && github.event_name == 'pull_request'
         continue-on-error: true
         uses: actions/github-script@v9
-        env:
-          TEST_BROWSER: ${{ matrix.browser }}
         with:
           script: |
             const fs = require('fs');
@@ -224,14 +370,14 @@ jobs:
             const { upsertPrComment } = require(
               path.join(process.env.GITHUB_WORKSPACE, 'scripts', 'ai', 'pr-comment-client.js')
             );
-            const browser = process.env.TEST_BROWSER || 'unknown';
+            const browser = (report.sourceContext && report.sourceContext.browser) || 'unknown';
             const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
             const body = formatComment({ browser, report, runUrl });
             const marker = MARKER(browser);
 
             try {
-              // One comment per browser/job, identified by its hidden marker,
-              // updated in place on retry instead of piling up new comments.
+              // One comment per browser, identified by its hidden marker,
+              // updated in place on retry instead of piling up new ones.
               const result = await upsertPrComment({
                 github,
                 owner: context.repo.owner,
@@ -247,18 +393,18 @@ jobs:
               core.warning(`Could not post/update the PR comment: ${err.message}`);
             }
 
-      # Mirror image of the step above: once a browser that previously
-      # failed (and got a QA Agent comment) starts passing again, replace
-      # that comment with a short "resolved" note instead of leaving a
-      # stale failure analysis on the PR forever. Only touches a comment
-      # that already exists for this browser - a PR that never failed gets
-      # no comment at all, from either step.
+      # Mirror image of the step above: once every browser is passing
+      # again, replace any previously-posted triage comment with a short
+      # "resolved" note instead of leaving a stale failure analysis on the
+      # PR forever. This job doesn't track across runs which single
+      # browser was "primary" the last time there was a failure, so it
+      # checks every known browser's marker and resolves whichever one(s)
+      # actually exist - a browser that never had a comment simply finds
+      # nothing and is skipped.
       - name: Resolve QA Agent comment on PR
-        if: steps.run_tests.outcome == 'success' && github.event_name == 'pull_request'
+        if: steps.aggregate.outputs.has-failures == 'false' && github.event_name == 'pull_request'
         continue-on-error: true
         uses: actions/github-script@v9
-        env:
-          TEST_BROWSER: ${{ matrix.browser }}
         with:
           script: |
             const path = require('path');
@@ -274,76 +420,48 @@ jobs:
             const { findMarkedComment } = require(
               path.join(process.env.GITHUB_WORKSPACE, 'scripts', 'ai', 'pr-comment-client.js')
             );
-            const browser = process.env.TEST_BROWSER || 'unknown';
-            const marker = MARKER(browser);
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
 
-            try {
-              const existing = await findMarkedComment({
-                github,
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issueNumber: prNumber,
-                marker,
-              });
-              if (!existing) {
-                return; // this browser never failed on this PR - nothing to resolve
+            for (const browser of ['chrome', 'edge']) {
+              const marker = MARKER(browser);
+              try {
+                const existing = await findMarkedComment({
+                  github,
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issueNumber: prNumber,
+                  marker,
+                });
+                if (!existing) {
+                  continue; // this browser never had a triage comment on this PR
+                }
+
+                const body = formatResolvedComment({ browser, runUrl });
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: existing.id,
+                  body,
+                });
+                core.notice(`Marked QA Agent comment for ${browser} as resolved (id ${existing.id}).`);
+              } catch (err) {
+                core.warning(`Could not resolve the PR comment for ${browser}: ${err.message}`);
               }
-
-              const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
-              const body = formatResolvedComment({ browser, runUrl });
-              // Already have the comment id from the lookup above - update it
-              // directly rather than re-searching via upsertPrComment.
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
-              });
-              core.notice(`Marked QA Agent comment for ${browser} as resolved (id ${existing.id}).`);
-            } catch (err) {
-              core.warning(`Could not resolve the PR comment: ${err.message}`);
             }
 
-      - name: Upload Cypress screenshots
-        if: steps.run_tests.outcome == 'failure'
+      # Aggregated/selected context, history, and the final ai-report.json
+      # (if AI analysis produced one) - not the raw per-browser downloads
+      # in reports/ai/browser-inputs/ (those are already preserved as each
+      # browser's own qa-triage-input-<browser> artifact from cypress-tests).
+      # if-no-files-found: ignore means a Groq failure (no ai-report.json)
+      # still uploads context.json/history.json rather than losing them.
+      - name: Upload AI analysis artifacts
+        if: steps.aggregate.outputs.has-failures == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: cypress-screenshots-${{ matrix.browser }}
-          path: cypress/screenshots
+          name: ai-report
+          path: |
+            reports/ai/context.json
+            reports/ai/history.json
+            reports/ai/ai-report.json
           if-no-files-found: ignore
-
-      - name: Upload Cypress videos
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: cypress-videos-${{ matrix.browser }}
-          path: cypress/videos
-          if-no-files-found: ignore
-
-      - name: Upload structured test report
-        if: steps.run_tests.outcome == 'failure'
-        uses: actions/upload-artifact@v7
-        with:
-          name: cypress-report-${{ matrix.browser }}
-          path: reports/cypress
-          if-no-files-found: ignore
-
-      - name: Upload AI failure context and analysis
-        if: steps.run_tests.outcome == 'failure'
-        uses: actions/upload-artifact@v7
-        with:
-          name: ai-report-${{ matrix.browser }}
-          path: reports/ai
-          if-no-files-found: ignore
-
-      # The one step in this job allowed to actually fail it. Everything
-      # above ran (or was skipped) without affecting job status; this is
-      # the sole source of truth for whether the job conclusion is
-      # failure, and it depends only on the original test outcome - never
-      # on whether AI collection/analysis succeeded, failed, or was
-      # skipped.
-      - name: Fail job on E2E failure
-        if: steps.run_tests.outcome == 'failure'
-        run: |
-          echo "Cypress E2E tests failed for browser '${{ matrix.browser }}'. See the report/screenshot/video artifacts (and AI analysis, if it ran) for details."
-          exit 1
