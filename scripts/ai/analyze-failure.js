@@ -2,26 +2,38 @@
 /**
  * QA Failure Analyzer
  *
- * reports/ai/context.json -> GitHub Models -> reports/ai/ai-report.json
+ * reports/ai/context.json -> AI provider -> reports/ai/ai-report.json
+ *
+ * Provider-neutral orchestration only:
+ *
+ *   read failure context -> build QA prompt -> get provider ->
+ *   provider.analyze() -> parse JSON -> validate result ->
+ *   apply QA-specific safeguards -> write ai-report.json
+ *
+ * This file never knows an API endpoint URL, request/header format, or
+ * auth scheme for any AI provider - that all lives behind the
+ * provider.analyze({systemPrompt, userPrompt}) contract in
+ * scripts/ai/providers/. Swapping which provider is used (currently only
+ * MockProvider - see scripts/ai/providers/) is a scripts/ai/providers/
+ * change, not an analyze-failure.js change.
  *
  * Security:
- *  - The auth token is read ONLY from process.env.GITHUB_TOKEN - the
- *    automatic per-run GitHub Actions token (or a developer's own token
- *    when running locally), never a separate paid-API credential. It is
- *    never hardcoded, never written to a file, and never logged (including
- *    in error paths - only status/message are surfaced, never raw
- *    error/request/response objects).
- *  - Makes exactly one outbound call, to GitHub Models, with exactly the
- *    contents of context.json (already scoped/size-capped by
- *    scripts/ai/collect-context.js). No other network access.
+ *  - Any provider credential is that provider implementation's own
+ *    responsibility to read/validate/never-log - this file never handles
+ *    one directly.
+ *  - Makes at most one provider call, with exactly the contents of
+ *    context.json (already scoped/size-capped by
+ *    scripts/ai/collect-context.js).
  */
 
 "use strict";
 
 const fs = require("fs");
 const path = require("path");
-const { MODEL, GITHUB_MODELS_ENDPOINT, PROVIDER_PAUSED_REASON } = require("./config");
+const { MODEL } = require("./config");
 const { CLASSIFICATIONS, buildSystemPrompt, buildUserPrompt } = require("./qa-agent-prompt");
+const { createProvider } = require("./providers");
+const { ProviderError } = require("./providers/provider-error");
 
 const ROOT = path.resolve(__dirname, "..", "..");
 const CONTEXT_FILE = path.join(ROOT, "reports", "ai", "context.json");
@@ -55,7 +67,7 @@ function readContext() {
 // JSON, or an { available: false } marker all just mean "no history" -
 // never an error. Only the compact aggregate counts are kept; internal
 // bookkeeping fields (available/reason/branch/generatedAt) aren't sent to
-// the model.
+// the provider.
 function readHistory() {
   if (!fs.existsSync(HISTORY_FILE)) return null;
 
@@ -76,55 +88,6 @@ function readHistory() {
   };
 }
 
-// GITHUB_TOKEN is present automatically in every GitHub Actions run
-// (scoped by the workflow's `permissions:` block) - this only fails
-// locally, where a developer hasn't exported one themselves.
-function requireGitHubToken() {
-  const token = process.env.GITHUB_TOKEN;
-  if (!token || !token.trim()) {
-    throw new AnalyzerError(
-      "GitHub Models authentication token is missing. Set GITHUB_TOKEN before running npm run ai:analyze " +
-        "(in CI this is automatic via `env: GITHUB_TOKEN: ${{ github.token }}`; locally, export your own token if you want to run this)."
-    );
-  }
-  return token;
-}
-
-// Used only when PROVIDER_PAUSED_REASON is set (see config.js) - a
-// synthesized, honest "we didn't actually analyze this" result per failed
-// test, not a fabricated analysis. classification: UNKNOWN + confidence: 0
-// is the correct, existing vocabulary for "insufficient evidence" - here
-// the "evidence" that's missing is an AI provider to call at all. Reuses
-// the exact same shape validateAnalysisItem() already enforces, so this
-// stub is held to the same contract as a real model response and flows
-// through the untouched PR-comment/artifact pipeline unchanged.
-function buildPausedResult(failedTest) {
-  return {
-    test: { title: failedTest.title || null, specFile: failedTest.specFile || null },
-    classification: "UNKNOWN",
-    confidence: 0,
-    summary: "AI analysis did not run for this failure.",
-    rootCause: PROVIDER_PAUSED_REASON,
-    evidence: [],
-    recommendedFix: null,
-    shouldCreateBug: false,
-    shouldRetry: false,
-  };
-}
-
-function buildPausedReport(context, failedTests) {
-  return {
-    generatedAt: new Date().toISOString(),
-    model: null,
-    sourceContext: pickSourceContext(context),
-    history: null,
-    usage: null,
-    results: failedTests.map(buildPausedResult),
-    warnings: [],
-    note: `AI analysis is paused: ${PROVIDER_PAUSED_REASON}`,
-  };
-}
-
 function pickSourceContext(context) {
   const m = context.metadata || {};
   return {
@@ -140,12 +103,11 @@ function pickSourceContext(context) {
 }
 
 // --- response validation --------------------------------------------------
-// No structured-output schema is enforced on the request (see
-// qa-agent-prompt.js) - GitHub Models proxies multiple model families and
-// strict JSON-schema constraints aren't guaranteed to be honored
-// identically by all of them. So the model's JSON shape is NOT trusted:
-// every value is validated by hand (enum membership, confidence range,
-// non-empty strings) before ever writing ai-report.json.
+// No structured-output schema is enforced on the provider call - not
+// every provider is guaranteed to honor one identically. So the
+// provider's JSON shape is NOT trusted: every value is validated by hand
+// (enum membership, confidence range, non-empty strings) before ever
+// writing ai-report.json.
 
 function isFiniteNumberInRange(n, min, max) {
   return typeof n === "number" && Number.isFinite(n) && n >= min && n <= max;
@@ -194,7 +156,7 @@ function validateAnalysisItem(item, index) {
 // Defense-in-depth against the one recommendation style the agent is
 // explicitly told not to make. The prompt is the primary control; this is
 // a non-blocking safety net that surfaces a warning instead of silently
-// trusting the model.
+// trusting the provider.
 const ARBITRARY_WAIT_PATTERN = /\bcy\.wait\(\s*\d+\s*\)|waitForTimeout\(\s*\d+\s*\)/i;
 
 function recommendsArbitraryWait(item) {
@@ -202,105 +164,75 @@ function recommendsArbitraryWait(item) {
   return ARBITRARY_WAIT_PATTERN.test(text);
 }
 
-// Retried: rate limiting, server-side/gateway errors, and anything that
-// never got an HTTP response at all (network blip, timeout). NOT retried:
-// 4xx errors like 401/403 (bad/insufficient token) or 400 (bad request) -
-// those fail exactly the same way every time, so retrying would only add
-// latency before the same clear error.
-const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503, 504]);
-
-function isRetryableStatus(status) {
-  return RETRYABLE_STATUS_CODES.has(status);
-}
-
 function defaultSleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Models occasionally wrap JSON in a markdown code fence despite being
+// Providers occasionally wrap JSON in a markdown code fence despite being
 // told not to (see the OUTPUT FORMAT instruction in qa-agent-prompt.js).
 // Strip that defensively rather than failing outright - the prompt is the
-// primary control, this is the fallback.
+// primary control, this is the fallback. Provider-neutral: not specific
+// to any one provider's response format.
 function stripCodeFences(text) {
   const trimmed = text.trim();
   const fenceMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
   return fenceMatch ? fenceMatch[1].trim() : trimmed;
 }
 
-// `fetchImpl`/`sleep` are injectable for testing; production calls always
-// use the real global fetch and a real timer.
-async function callGitHubModels(
-  token,
+// Bounded retry around a single provider.analyze() call. Providers signal
+// "this specific failure is worth retrying" via ProviderError's
+// `retryable` flag (see providers/provider-error.js) - this orchestration
+// layer never inspects an HTTP status code or any other provider-specific
+// detail, only that one generic, provider-neutral signal. `sleep` is
+// injectable for testing.
+async function runProviderAnalysis(
+  provider,
   context,
-  { fetchImpl = fetch, maxAttempts = 3, retryDelaysMs = [500, 1500], sleep = defaultSleep } = {}
+  { maxAttempts = 3, retryDelaysMs = [500, 1500], sleep = defaultSleep } = {}
 ) {
-  let response;
+  const systemPrompt = buildSystemPrompt();
+  const userPrompt = buildUserPrompt(context);
+
+  let raw;
   let lastErr;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    let res;
     try {
-      res = await fetchImpl(GITHUB_MODELS_ENDPOINT, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          model: MODEL,
-          temperature: 0,
-          messages: [
-            { role: "system", content: buildSystemPrompt() },
-            { role: "user", content: buildUserPrompt(context) },
-          ],
-        }),
-      });
-    } catch (err) {
-      // Never got a response at all (network blip, timeout) - worth retrying.
-      lastErr = err;
-      if (attempt === maxAttempts) break;
-      await sleep(retryDelaysMs[attempt - 1] ?? retryDelaysMs[retryDelaysMs.length - 1]);
-      continue;
-    }
-
-    if (res.ok) {
-      response = await res.json();
+      raw = await provider.analyze({ systemPrompt, userPrompt });
       lastErr = null;
       break;
+    } catch (err) {
+      lastErr = err;
+      const retryable = err instanceof ProviderError ? err.retryable : false;
+      if (attempt === maxAttempts || !retryable) break;
+      await sleep(retryDelaysMs[attempt - 1] ?? retryDelaysMs[retryDelaysMs.length - 1]);
     }
-
-    const statusText = res.status === 429 ? "GitHub Models rate limit reached" : res.statusText;
-    lastErr = new AnalyzerError(`GitHub Models API request failed (HTTP ${res.status}): ${statusText}`);
-    lastErr.status = res.status;
-    if (attempt === maxAttempts || !isRetryableStatus(res.status)) break;
-    await sleep(retryDelaysMs[attempt - 1] ?? retryDelaysMs[retryDelaysMs.length - 1]);
   }
 
   if (lastErr) {
-    // Deliberately surface only status/message - never the raw error/request
-    // object, which could otherwise leak request metadata (including the
-    // Authorization header) into CI logs.
-    if (lastErr instanceof AnalyzerError) throw lastErr;
-    throw new AnalyzerError(`GitHub Models API request failed: ${lastErr.message || "unknown error"}`);
+    // Deliberately surface only code/message - never the raw provider
+    // error/request object, which could otherwise leak request metadata
+    // (e.g. an Authorization header a real provider set) into CI logs.
+    const code = lastErr instanceof ProviderError && lastErr.code ? ` (${lastErr.code})` : "";
+    throw new AnalyzerError(`AI provider request failed${code}: ${lastErr.message || "unknown error"}`);
   }
 
-  const raw = response && response.choices && response.choices[0] && response.choices[0].message.content;
-  if (!raw) {
-    throw new AnalyzerError("GitHub Models response did not include any content.");
+  if (!raw || typeof raw !== "string" || !raw.trim()) {
+    throw new AnalyzerError("AI provider response did not include any content.");
   }
 
   let parsed;
   try {
     parsed = JSON.parse(stripCodeFences(raw));
   } catch (err) {
-    throw new AnalyzerError(`GitHub Models response was not valid JSON: ${err.message}`);
+    throw new AnalyzerError(`AI provider response was not valid JSON: ${err.message}`);
   }
 
   if (!parsed || !Array.isArray(parsed.results)) {
-    throw new AnalyzerError('GitHub Models response did not match the expected shape (missing "results" array).');
+    throw new AnalyzerError('AI provider response did not match the expected shape (missing "results" array).');
   }
 
-  return { results: parsed.results, usage: response.usage || null };
+  return { results: parsed.results };
 }
 
 function fail(message) {
@@ -335,20 +267,9 @@ async function main() {
     return;
   }
 
-  // Short-circuits before any network call, GITHUB_TOKEN check, or history
-  // read - there is nothing to authenticate to or retry against a
-  // permanently dead endpoint. See PROVIDER_PAUSED_REASON in config.js.
-  if (PROVIDER_PAUSED_REASON) {
-    const pausedReport = buildPausedReport(context, failedTests);
-    fs.writeFileSync(OUTPUT_FILE, JSON.stringify(pausedReport, null, 2));
-    console.log(`[ai:analyze] AI analysis is paused: ${PROVIDER_PAUSED_REASON}`);
-    console.log(`[ai:analyze] wrote ${path.relative(ROOT, OUTPUT_FILE)} (${pausedReport.results.length} stub result(s)).`);
-    return;
-  }
-
-  let token;
+  let provider;
   try {
-    token = requireGitHubToken();
+    provider = createProvider();
   } catch (err) {
     fail(err.message);
     return;
@@ -360,24 +281,22 @@ async function main() {
   const history = readHistory();
   if (history) context.history = history;
 
-  let results, usage;
+  let results;
   try {
-    ({ results, usage } = await callGitHubModels(token, context));
+    ({ results } = await runProviderAnalysis(provider, context));
   } catch (err) {
     fail(err.message);
     return;
   }
 
   if (results.length !== failedTests.length) {
-    fail(
-      `GitHub Models returned ${results.length} result(s) but context.json has ${failedTests.length} failed test(s).`
-    );
+    fail(`AI provider returned ${results.length} result(s) but context.json has ${failedTests.length} failed test(s).`);
     return;
   }
 
   const structureErrors = results.flatMap((item, i) => validateAnalysisItem(item, i));
   if (structureErrors.length > 0) {
-    fail(`GitHub Models response failed validation:\n  - ${structureErrors.join("\n  - ")}`);
+    fail(`AI provider response failed validation:\n  - ${structureErrors.join("\n  - ")}`);
     return;
   }
 
@@ -394,17 +313,10 @@ async function main() {
     generatedAt: new Date().toISOString(),
     model: MODEL,
     sourceContext: pickSourceContext(context),
-    // Same compact counts the model saw, kept on the report for
+    // Same compact counts the provider saw, kept on the report for
     // traceability - not the raw per-run data (there isn't any to keep;
     // collect-history.js never persists more than these aggregates).
     history,
-    usage: usage
-      ? {
-          promptTokens: usage.prompt_tokens ?? null,
-          completionTokens: usage.completion_tokens ?? null,
-          totalTokens: usage.total_tokens ?? null,
-        }
-      : null,
     results,
     warnings,
   };
@@ -421,14 +333,11 @@ if (require.main === module) {
 }
 
 module.exports = {
-  callGitHubModels,
+  runProviderAnalysis,
   validateAnalysisItem,
   recommendsArbitraryWait,
-  isRetryableStatus,
   stripCodeFences,
   pickSourceContext,
   readHistory,
-  buildPausedResult,
-  buildPausedReport,
   MODEL,
 };
