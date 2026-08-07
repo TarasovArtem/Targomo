@@ -13,8 +13,9 @@
  * This file never knows an API endpoint URL, request/header format, or
  * auth scheme for any AI provider - that all lives behind the
  * provider.analyze({systemPrompt, userPrompt}) contract in
- * scripts/ai/providers/. Swapping which provider is used (currently only
- * MockProvider - see scripts/ai/providers/) is a scripts/ai/providers/
+ * scripts/ai/providers/ (MockProvider for local dev/tests, GroqProvider in
+ * GitHub Actions - see scripts/ai/providers/index.js). Swapping which
+ * provider is used, or adding another one, is a scripts/ai/providers/
  * change, not an analyze-failure.js change.
  *
  * Security:
@@ -30,10 +31,11 @@
 
 const fs = require("fs");
 const path = require("path");
-const { MODEL } = require("./config");
+const { MODEL, PROVIDER } = require("./config");
 const { CLASSIFICATIONS, buildSystemPrompt, buildUserPrompt } = require("./qa-agent-prompt");
 const { createProvider } = require("./providers");
-const { ProviderError } = require("./providers/provider-error");
+const { normalizeProviderError } = require("./providers/provider-error");
+const { validateProvider, validateProviderResponse } = require("./providers/provider-contract");
 
 const ROOT = path.resolve(__dirname, "..", "..");
 const CONTEXT_FILE = path.join(ROOT, "reports", "ai", "context.json");
@@ -183,13 +185,20 @@ function stripCodeFences(text) {
 // "this specific failure is worth retrying" via ProviderError's
 // `retryable` flag (see providers/provider-error.js) - this orchestration
 // layer never inspects an HTTP status code or any other provider-specific
-// detail, only that one generic, provider-neutral signal. `sleep` is
-// injectable for testing.
+// detail, only that one generic, provider-neutral signal. Any exception a
+// provider throws - whether it's already a ProviderError or an ordinary
+// Error escaping a buggy implementation - is normalized to a ProviderError
+// before that decision is made, so this loop only ever has one error shape
+// to reason about. `sleep` is injectable for testing.
 async function runProviderAnalysis(
   provider,
   context,
   { maxAttempts = 3, retryDelaysMs = [500, 1500], sleep = defaultSleep } = {}
 ) {
+  // A provider missing analyze() (or not an object at all) can never
+  // succeed on retry - fail once, clearly, before spending any attempts.
+  validateProvider(provider);
+
   const systemPrompt = buildSystemPrompt();
   const userPrompt = buildUserPrompt(context);
 
@@ -198,27 +207,25 @@ async function runProviderAnalysis(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      raw = await provider.analyze({ systemPrompt, userPrompt });
+      const response = await provider.analyze({ systemPrompt, userPrompt });
+      validateProviderResponse(response);
+      raw = response;
       lastErr = null;
       break;
     } catch (err) {
-      lastErr = err;
-      const retryable = err instanceof ProviderError ? err.retryable : false;
-      if (attempt === maxAttempts || !retryable) break;
+      lastErr = normalizeProviderError(err);
+      if (attempt === maxAttempts || !lastErr.retryable) break;
       await sleep(retryDelaysMs[attempt - 1] ?? retryDelaysMs[retryDelaysMs.length - 1]);
     }
   }
 
   if (lastErr) {
     // Deliberately surface only code/message - never the raw provider
-    // error/request object, which could otherwise leak request metadata
-    // (e.g. an Authorization header a real provider set) into CI logs.
-    const code = lastErr instanceof ProviderError && lastErr.code ? ` (${lastErr.code})` : "";
+    // error/request object (or its .cause), which could otherwise leak
+    // request metadata (e.g. an Authorization header a real provider set)
+    // into CI logs.
+    const code = lastErr.code ? ` (${lastErr.code})` : "";
     throw new AnalyzerError(`AI provider request failed${code}: ${lastErr.message || "unknown error"}`);
-  }
-
-  if (!raw || typeof raw !== "string" || !raw.trim()) {
-    throw new AnalyzerError("AI provider response did not include any content.");
   }
 
   let parsed;
@@ -235,6 +242,65 @@ async function runProviderAnalysis(
   return { results: parsed.results };
 }
 
+// Builds the full ai-report.json object for a context that has at least
+// one failed test - the one piece of orchestration logic worth testing
+// independently of file I/O (see analyze-failure.test.js's pipeline test).
+// `provider`/`history` are injectable so a test can supply a MockProvider
+// and a fixed history value without touching process.env or the real
+// reports/ai/history.json file; production (main(), below) always lets
+// both default to their real implementations.
+async function buildFailureReport(context, { provider = createProvider(), history = readHistory() } = {}) {
+  const failedTests = context.failedTests || [];
+  const generatedAt = new Date().toISOString();
+
+  // Optional flaky-test signal (see collect-history.js). Attached onto the
+  // same context object buildUserPrompt already reads from, so a missing
+  // reports/ai/history.json changes nothing else about this run.
+  if (history) context.history = history;
+
+  const { results } = await runProviderAnalysis(provider, context);
+
+  if (results.length !== failedTests.length) {
+    throw new AnalyzerError(
+      `AI provider returned ${results.length} result(s) but context.json has ${failedTests.length} failed test(s).`
+    );
+  }
+
+  const structureErrors = results.flatMap((item, i) => validateAnalysisItem(item, i));
+  if (structureErrors.length > 0) {
+    throw new AnalyzerError(`AI provider response failed validation:\n  - ${structureErrors.join("\n  - ")}`);
+  }
+
+  const warnings = [];
+  results.forEach((item, i) => {
+    if (recommendsArbitraryWait(item)) {
+      warnings.push(
+        `results[${i}] (${(item.test && item.test.title) || "unknown test"}) recommends a fixed-duration wait; review before applying - prefer deterministic synchronization.`
+      );
+    }
+  });
+
+  return {
+    generatedAt,
+    model: MODEL,
+    // Application-attributed metadata about the analysis run itself -
+    // added here, after the model response has already been validated,
+    // never inside the LLM-generated JSON schema (a provider has no
+    // business asserting its own name; the application already knows it).
+    // Kept as its own object rather than replacing the existing top-level
+    // generatedAt/model fields so format-pr-comment.js's existing
+    // `report.model` read keeps working unchanged.
+    analysis: { provider: provider.name || "unknown", generatedAt },
+    sourceContext: pickSourceContext(context),
+    // Same compact counts the provider saw, kept on the report for
+    // traceability - not the raw per-run data (there isn't any to keep;
+    // collect-history.js never persists more than these aggregates).
+    history,
+    results,
+    warnings,
+  };
+}
+
 function fail(message) {
   console.error(`[ai:analyze] Error: ${message}`);
   process.exitCode = 1;
@@ -249,13 +315,14 @@ async function main() {
     return;
   }
 
-  const failedTests = context.failedTests || [];
   fs.mkdirSync(path.dirname(OUTPUT_FILE), { recursive: true });
 
+  const failedTests = context.failedTests || [];
   if (failedTests.length === 0) {
     const emptyReport = {
       generatedAt: new Date().toISOString(),
       model: MODEL,
+      analysis: null,
       sourceContext: pickSourceContext(context),
       history: null,
       results: [],
@@ -267,63 +334,22 @@ async function main() {
     return;
   }
 
-  let provider;
+  // Safe to log: provider/model are configuration, never a credential.
+  // Never add AI_API_KEY (or anything derived from it) to this or any
+  // other log line in this file.
+  console.log(`[ai:analyze] AI provider: ${PROVIDER} · model: ${MODEL || "not configured"}`);
+
+  let report;
   try {
-    provider = createProvider();
+    report = await buildFailureReport(context);
   } catch (err) {
     fail(err.message);
     return;
   }
-
-  // Optional flaky-test signal (see collect-history.js). Attached onto the
-  // same context object buildUserPrompt already reads from, so a missing
-  // reports/ai/history.json changes nothing else about this run.
-  const history = readHistory();
-  if (history) context.history = history;
-
-  let results;
-  try {
-    ({ results } = await runProviderAnalysis(provider, context));
-  } catch (err) {
-    fail(err.message);
-    return;
-  }
-
-  if (results.length !== failedTests.length) {
-    fail(`AI provider returned ${results.length} result(s) but context.json has ${failedTests.length} failed test(s).`);
-    return;
-  }
-
-  const structureErrors = results.flatMap((item, i) => validateAnalysisItem(item, i));
-  if (structureErrors.length > 0) {
-    fail(`AI provider response failed validation:\n  - ${structureErrors.join("\n  - ")}`);
-    return;
-  }
-
-  const warnings = [];
-  results.forEach((item, i) => {
-    if (recommendsArbitraryWait(item)) {
-      warnings.push(
-        `results[${i}] (${(item.test && item.test.title) || "unknown test"}) recommends a fixed-duration wait; review before applying - prefer deterministic synchronization.`
-      );
-    }
-  });
-
-  const report = {
-    generatedAt: new Date().toISOString(),
-    model: MODEL,
-    sourceContext: pickSourceContext(context),
-    // Same compact counts the provider saw, kept on the report for
-    // traceability - not the raw per-run data (there isn't any to keep;
-    // collect-history.js never persists more than these aggregates).
-    history,
-    results,
-    warnings,
-  };
 
   fs.writeFileSync(OUTPUT_FILE, JSON.stringify(report, null, 2));
-  console.log(`[ai:analyze] wrote ${path.relative(ROOT, OUTPUT_FILE)} (${results.length} result(s)).`);
-  for (const w of warnings) console.log(`[ai:analyze] warning: ${w}`);
+  console.log(`[ai:analyze] wrote ${path.relative(ROOT, OUTPUT_FILE)} (${report.results.length} result(s)).`);
+  for (const w of report.warnings) console.log(`[ai:analyze] warning: ${w}`);
 }
 
 if (require.main === module) {
@@ -334,6 +360,7 @@ if (require.main === module) {
 
 module.exports = {
   runProviderAnalysis,
+  buildFailureReport,
   validateAnalysisItem,
   recommendsArbitraryWait,
   stripCodeFences,

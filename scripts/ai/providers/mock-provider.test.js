@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const { MockProvider } = require("./mock-provider");
 const { CLASSIFICATIONS } = require("../qa-agent-prompt");
 const { validateAnalysisItem } = require("../analyze-failure");
+const { ProviderError, PROVIDER_ERROR_CODES } = require("./provider-error");
 
 function userPromptFor(failedTests) {
   return ["Analyze the following.", "", "```json", JSON.stringify({ failedTests }, null, 2), "```"].join("\n");
@@ -85,13 +86,73 @@ test("MockProvider.analyze: falls back to a single generic result when the promp
   assert.deepEqual(validateAnalysisItem(parsed.results[0], 0), []);
 });
 
-test("MockProvider.analyze: is honest that no real analysis happened (visible in rootCause/summary, no fabricated evidence)", async () => {
+test("MockProvider.analyze: is honest that no real analysis happened (visible in rootCause/summary), and never fabricates evidence", async () => {
   const provider = new MockProvider();
   const raw = await provider.analyze({ systemPrompt: "sys", userPrompt: userPromptFor([{ title: "t" }]) });
   const [result] = JSON.parse(raw).results;
 
   assert.match(result.rootCause, /no real ai provider/i);
-  assert.deepEqual(result.evidence, ["Analysis was produced by MockProvider."]);
+  // Empty, not e.g. ["Analysis was produced by MockProvider."]: which
+  // provider ran is infrastructure metadata (see report.analysis in
+  // analyze-failure.js), not QA evidence about the failure - MockProvider
+  // examined none, so it claims none.
+  assert.deepEqual(result.evidence, []);
   assert.equal(result.shouldCreateBug, false);
   assert.equal(result.shouldRetry, false);
+});
+
+test("MockProvider: exposes a plain string name, 'mock'", () => {
+  const provider = new MockProvider();
+  assert.equal(provider.name, "mock");
+});
+
+test("MockProvider: mode 'error' throws the exact error instance passed in, for a retryable-error test scenario", async () => {
+  const retryableError = new ProviderError("Service Unavailable", { code: PROVIDER_ERROR_CODES.TIMEOUT, retryable: true });
+  const provider = new MockProvider({ mode: "error", error: retryableError });
+
+  await assert.rejects(
+    () => provider.analyze({ systemPrompt: "sys", userPrompt: userPromptFor([{ title: "t" }]) }),
+    (err) => err === retryableError
+  );
+});
+
+test("MockProvider: mode 'error' throws the exact error instance passed in, for a non-retryable-error test scenario", async () => {
+  const nonRetryableError = new ProviderError("Unauthorized", { code: PROVIDER_ERROR_CODES.AUTH, retryable: false });
+  const provider = new MockProvider({ mode: "error", error: nonRetryableError });
+
+  await assert.rejects(
+    () => provider.analyze({ systemPrompt: "sys", userPrompt: userPromptFor([{ title: "t" }]) }),
+    (err) => err === nonRetryableError
+  );
+});
+
+test("MockProvider: mode 'error' with no explicit error still throws a sensible, non-retryable ProviderError", async () => {
+  const provider = new MockProvider({ mode: "error" });
+  await assert.rejects(
+    () => provider.analyze({ systemPrompt: "sys", userPrompt: userPromptFor([{ title: "t" }]) }),
+    (err) => {
+      assert.ok(err instanceof ProviderError);
+      assert.equal(err.retryable, false);
+      return true;
+    }
+  );
+});
+
+test("MockProvider: mode 'invalid-response' resolves with whatever bad value the test asked for, instead of throwing", async () => {
+  const provider = new MockProvider({ mode: "invalid-response", response: "" });
+  const result = await provider.analyze({ systemPrompt: "sys", userPrompt: userPromptFor([{ title: "t" }]) });
+  assert.equal(result, "");
+});
+
+test("MockProvider: mode 'invalid-response' can simulate a null response", async () => {
+  const provider = new MockProvider({ mode: "invalid-response", response: null });
+  const result = await provider.analyze({ systemPrompt: "sys", userPrompt: userPromptFor([{ title: "t" }]) });
+  assert.equal(result, null);
+});
+
+test("MockProvider: default construction (no options) is unaffected by the new modes - still today's safe success behavior", async () => {
+  const provider = new MockProvider();
+  assert.equal(provider.mode, "success");
+  const raw = await provider.analyze({ systemPrompt: "sys", userPrompt: userPromptFor([{ title: "t" }]) });
+  assert.doesNotThrow(() => JSON.parse(raw));
 });

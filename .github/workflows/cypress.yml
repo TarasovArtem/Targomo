@@ -12,9 +12,11 @@ on:
 # Minimal permissions for what this workflow actually does: read the repo,
 # read past workflow run/job history for flaky-test signal (actions: read),
 # and post/update a PR comment with the AI analysis. Nothing here needs
-# issues, checks, or any other write scope. AI analysis itself
-# (AI_PROVIDER=mock - see the "AI failure analysis" step below) makes no
-# network/GitHub API call at all, so it needs no permission of its own.
+# issues, checks, or any other write scope. AI analysis itself (see the "AI
+# failure analysis" step below) calls the external Groq API directly over
+# fetch, authenticated with its own AI_API_KEY (from the GROQ_API_KEY
+# repository secret) - not GITHUB_TOKEN - so it needs no GitHub Actions
+# permission of its own regardless of which AI_PROVIDER is configured.
 # For pull_request runs triggered by a fork, GitHub forces GITHUB_TOKEN to
 # read-only regardless of what's declared here - contents/actions are
 # already read-only so unaffected; only the pull-requests: write comment
@@ -95,12 +97,19 @@ jobs:
 
       # AI analysis goes through a provider-neutral abstraction (see
       # scripts/ai/providers/) - which provider is used is selected by
-      # AI_PROVIDER, not hardcoded here. Currently pinned to "mock" (the
-      # safe default in scripts/ai/config.js too): it performs no network
-      # call and needs no secret, so this step requires no credential and
-      # no permission of its own. Swapping in a real provider later is a
-      # scripts/ai/providers/ + this env block change, not a rewrite of
-      # this step. Informational only: it never runs when tests pass, and
+      # AI_PROVIDER, not hardcoded here. GitHub Actions uses the real Groq
+      # provider (scripts/ai/providers/groq-provider.js); local development
+      # and unit tests keep using AI_PROVIDER=mock (see README.md) - no
+      # real Groq call ever happens outside this workflow. GROQ_API_KEY is
+      # the GitHub repository secret; AI_API_KEY is the generic,
+      # provider-neutral application env var GroqProvider actually reads
+      # (see scripts/ai/config.js) - analyze-failure.js itself never learns
+      # Groq's name. Deliberately no fallback to MockProvider if
+      # GROQ_API_KEY is missing/invalid: a real-provider request that can't
+      # authenticate should fail honestly (surfacing as "AI analysis
+      # unavailable" in the artifact/PR comment via the existing
+      # continue-on-error below), not silently produce a fabricated mock
+      # analysis. Informational only: it never runs when tests pass, and
       # continue-on-error here means an AI provider failure can't add a
       # second, unrelated failure reason - the job still fails for the
       # original E2E reason via the gate step below either way.
@@ -108,16 +117,24 @@ jobs:
         if: steps.run_tests.outcome == 'failure'
         continue-on-error: true
         env:
-          AI_PROVIDER: mock
+          AI_PROVIDER: groq
+          AI_MODEL: openai/gpt-oss-120b
+          AI_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: npm run ai:analyze
 
       # Only ever runs for pull_request (never push/workflow_dispatch, where
       # there is no PR to comment on) and only once tests have failed.
       #
-      # Fork PRs: AI analysis itself (AI_PROVIDER=mock) makes no network or
-      # GitHub API call, so it runs identically for fork and same-repo PRs -
-      # reports/ai/ai-report.json should exist either way. What's blocked
-      # for forks is posting the *comment*: GitHub forces GITHUB_TOKEN to
+      # Fork PRs: GitHub does not expose repository secrets (GROQ_API_KEY)
+      # to fork-triggered pull_request runs, so AI_API_KEY resolves empty
+      # there - GroqProvider's own config validation rejects that as a
+      # CONFIGURATION error (no fallback to MockProvider), and the AI
+      # failure analysis step's continue-on-error means that shows up as
+      # "AI analysis unavailable", not a crash and not a leaked secret.
+      # Same-repo PRs get a real Groq-backed report. Either way,
+      # reports/ai/ai-report.json may or may not exist by this point - what
+      # is separately blocked for forks is posting the *comment*: GitHub
+      # forces GITHUB_TOKEN to
       # read-only for fork-triggered pull_request runs regardless of the
       # `permissions:` block above, so the pull-requests: write comment API
       # call would 403 - that's caught and logged as a warning, not a job
