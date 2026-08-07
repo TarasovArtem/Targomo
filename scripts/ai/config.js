@@ -27,7 +27,14 @@ const MODEL = process.env.AI_MODEL || DEFAULT_MODEL;
 
 // Provider-specific credential. Never required for AI_PROVIDER=mock - a
 // real provider implementation is responsible for validating its own
-// presence (and never logging it) once one exists.
+// presence (and never logging it) once one exists. Deliberately no
+// `if (PROVIDER === "some-provider") ...` here or anywhere outside that
+// provider's own file: a provider that needs AI_API_KEY/AI_MODEL to be set
+// should check for and reject its own missing config from inside its own
+// constructor/analyze() (throwing a ProviderError with
+// code: PROVIDER_ERROR_CODES.CONFIGURATION - see providers/provider-error.js),
+// not by teaching this shared config module about provider names that
+// don't exist yet.
 const API_KEY = process.env.AI_API_KEY || null;
 
 module.exports = { PROVIDER, DEFAULT_PROVIDER, MODEL, DEFAULT_MODEL, API_KEY };

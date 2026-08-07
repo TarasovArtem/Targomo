@@ -6,12 +6,15 @@ const fs = require("node:fs");
 const path = require("node:path");
 const {
   runProviderAnalysis,
+  buildFailureReport,
   validateAnalysisItem,
   recommendsArbitraryWait,
   stripCodeFences,
   readHistory,
 } = require("./analyze-failure");
-const { ProviderError } = require("./providers/provider-error");
+const { ProviderError, PROVIDER_ERROR_CODES } = require("./providers/provider-error");
+const { MockProvider } = require("./providers/mock-provider");
+const { CLASSIFICATIONS } = require("./qa-agent-prompt");
 
 const ROOT = path.resolve(__dirname, "..", "..");
 const HISTORY_FILE = path.join(ROOT, "reports", "ai", "history.json");
@@ -191,12 +194,46 @@ test("runProviderAnalysis: a plain (non-ProviderError) throw is treated as non-r
 
 test("runProviderAnalysis: empty response content produces a clear error, not a crash", async () => {
   const provider = { analyze: async () => "" };
-  await assert.rejects(() => runProviderAnalysis(provider, context, { sleep: noopSleep }), /did not include any content/);
+  await assert.rejects(() => runProviderAnalysis(provider, context, { sleep: noopSleep }), /empty response/i);
+});
+
+test("runProviderAnalysis: a whitespace-only response is treated the same as empty", async () => {
+  const provider = { analyze: async () => "   \n  " };
+  await assert.rejects(() => runProviderAnalysis(provider, context, { sleep: noopSleep }), /empty response/i);
 });
 
 test("runProviderAnalysis: a non-string response produces a clear error, not a crash", async () => {
   const provider = { analyze: async () => null };
-  await assert.rejects(() => runProviderAnalysis(provider, context, { sleep: noopSleep }), /did not include any content/);
+  await assert.rejects(() => runProviderAnalysis(provider, context, { sleep: noopSleep }), /invalid response type/i);
+});
+
+test("runProviderAnalysis: an object response (not yet a string) is rejected before ever reaching JSON.parse", async () => {
+  const provider = { analyze: async () => ({ results: [goodItem()] }) };
+  await assert.rejects(() => runProviderAnalysis(provider, context, { sleep: noopSleep }), /invalid response type/i);
+});
+
+test("runProviderAnalysis: a provider object missing analyze() fails immediately with a clear error, no retries spent", async () => {
+  let sleepCalls = 0;
+  await assert.rejects(
+    () => runProviderAnalysis({}, context, { sleep: async () => { sleepCalls += 1; }, maxAttempts: 3 }),
+    (err) => {
+      assert.match(err.message, /analyze\(\) function is required/);
+      return true;
+    }
+  );
+  assert.equal(sleepCalls, 0, "an invalid provider object should never be retried");
+});
+
+test("runProviderAnalysis: an invalid-response failure is not retried by default (INVALID_RESPONSE is non-retryable)", async () => {
+  let calls = 0;
+  const provider = {
+    analyze: async () => {
+      calls += 1;
+      return "";
+    },
+  };
+  await assert.rejects(() => runProviderAnalysis(provider, context, { sleep: noopSleep, maxAttempts: 3 }));
+  assert.equal(calls, 1);
 });
 
 test("runProviderAnalysis: unexpected response shape (no results array) produces a clear error", async () => {
@@ -251,4 +288,37 @@ test("readHistory: strips internal bookkeeping fields, keeping only the compact 
   t.after(() => fs.rmSync(path.dirname(HISTORY_FILE), { recursive: true, force: true }));
 
   assert.deepEqual(readHistory(), { runsConsidered: 10, passes: 7, failures: 3, retryPasses: 2 });
+});
+
+// --- pipeline (contract-boundary integration) test ------------------------
+// No network, no filesystem beyond what the test controls directly:
+// `history: null` is passed explicitly so this never touches the real
+// reports/ai/history.json (avoiding any interaction with the readHistory
+// tests above, which do use that file). Exercises the real MockProvider -
+// not a hand-rolled fake - through the real buildFailureReport(), the same
+// function main() calls, so this is the closest thing to an end-to-end
+// check of "fixture context -> MockProvider -> validated ai-report.json
+// shape" this test suite has, while staying fully deterministic.
+test("buildFailureReport: fixture context through the real MockProvider produces a valid, fully-populated report", async () => {
+  const provider = new MockProvider();
+  const report = await buildFailureReport(context, { provider, history: null });
+
+  assert.equal(report.results.length, 1);
+  const [result] = report.results;
+  assert.ok(CLASSIFICATIONS.includes(result.classification));
+  assert.ok(result.confidence >= 0 && result.confidence <= 1);
+  assert.deepEqual(validateAnalysisItem(result, 0), []);
+
+  assert.equal(report.analysis.provider, "mock");
+  assert.ok(Date.parse(report.analysis.generatedAt), "analysis.generatedAt must be a valid ISO timestamp");
+  assert.ok(Date.parse(report.generatedAt), "generatedAt must be a valid ISO timestamp");
+
+  assert.equal(report.history, null);
+  assert.deepEqual(report.warnings, []);
+});
+
+test("buildFailureReport: a provider without a .name still produces a report, falling back to 'unknown'", async () => {
+  const provider = { analyze: async () => JSON.stringify({ results: [goodItem()] }) };
+  const report = await buildFailureReport(context, { provider, history: null });
+  assert.equal(report.analysis.provider, "unknown");
 });
