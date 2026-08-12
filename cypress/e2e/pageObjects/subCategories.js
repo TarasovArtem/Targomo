@@ -10,7 +10,7 @@ export class SubCategories {
     }
 
     getFastFood() {
-        return cy.contains('mat-checkbox', 'Fastfood');
+        return cy.contains('mat-checkbox', 'Fast food');
     }
 
     getFoodCourt() {
