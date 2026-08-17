@@ -14,7 +14,7 @@ describe('Category tree behavior', () => {
         subCategories.getRestaurant().click();
         categories.getGastronomy()
             .should('have.class', 'mat-checkbox-indeterminate')
-            .and('have.class', 'mat-checkbox-checked');
+            .and('not.have.class', 'mat-checkbox-checked');
     })
 
     it('should remove subcategories from the DOM after collapsing the parent category', () => {
