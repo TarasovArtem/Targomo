@@ -57,6 +57,46 @@ jobs:
       - name: Run unit tests
         run: npm run test:unit
 
+  # Standalone, offline, informational check for the QA Agent evaluation
+  # infrastructure (Dataset v1 + Baseline v1 + regression.js): reports
+  # classification/action accuracy and a REGRESSED/IMPROVED/UNCHANGED
+  # comparison against the frozen baseline in the job log. Deliberately its
+  # own job with no `needs:` on Cypress or qa-ai-triage - it only reads
+  # repository files (dataset.json, baseline-v1.json) and Node dependencies,
+  # so it starts immediately and runs in parallel with them, exactly like
+  # unit-tests above. A REGRESSED result is currently informational only
+  # (see regression.js's run()/formatRegressionReport()) and must not fail
+  # this job - only a technical failure (invalid dataset/baseline, a
+  # runtime crash, an unexpected non-zero exit) does, via each npm script's
+  # own exit code - no continue-on-error is used, so that stays true.
+  # Fully offline: no GROQ_API_KEY/AI_API_KEY, no AI_PROVIDER/AI_MODEL, no
+  # AI provider or network call of any kind.
+  qa-agent-evaluation:
+    name: QA Agent evaluation
+    runs-on: ubuntu-latest
+    # Scoped down to the one thing this job does: read the repo to check it
+    # out. No GitHub API access, no PR comments, no secrets.
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run QA Agent evaluation
+        run: npm run eval:ai
+
+      - name: Run QA Agent regression comparison
+        run: npm run eval:regression
+
   cypress-tests:
     name: Cypress - ${{ matrix.browser }}
     runs-on: ubuntu-latest
