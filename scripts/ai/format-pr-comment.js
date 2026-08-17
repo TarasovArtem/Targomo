@@ -108,6 +108,20 @@ function formatHistoryLine(history) {
   return `${passes}/${runsConsidered} of the last runs on \`main\` passed for this browser (${failures} failed${retryPart}).`;
 }
 
+// One-line summary of the same deterministic browserCorrelation object the
+// model saw (see qa-agent-prompt.js) - just enough for a human skimming the
+// PR comment to know whether this was single- or multi-browser without
+// opening the ai-report artifact. Deliberately not a full breakdown (no
+// signature detail, no passed-browser list beyond the count) to keep the
+// comment's scope from growing beyond a single evidence line.
+function formatCorrelationLine(correlation) {
+  if (!correlation || !Array.isArray(correlation.failedBrowsers)) return null;
+
+  const { failureScope, failedBrowsers, passedBrowsers } = correlation;
+  const passedPart = Array.isArray(passedBrowsers) && passedBrowsers.length ? `; passed: ${passedBrowsers.join(", ")}` : "";
+  return `${failureScope} — failed: ${failedBrowsers.join(", ") || "none"}${passedPart}.`;
+}
+
 function formatComment({ browser, report, runUrl }) {
   const results = Array.isArray(report && report.results) ? report.results : [];
 
@@ -116,6 +130,11 @@ function formatComment({ browser, report, runUrl }) {
   const historyLine = formatHistoryLine(report && report.history);
   if (historyLine) {
     header.push("**Recent history:**", historyLine, "");
+  }
+
+  const correlationLine = formatCorrelationLine(report && report.sourceContext && report.sourceContext.browserCorrelation);
+  if (correlationLine) {
+    header.push("**Browser scope:**", correlationLine, "");
   }
 
   const blocks = results.map((result, i) => {
@@ -157,4 +176,4 @@ function formatResolvedComment({ browser, runUrl }) {
   return lines.join("\n");
 }
 
-module.exports = { formatComment, formatResolvedComment, formatHistoryLine, MARKER };
+module.exports = { formatComment, formatResolvedComment, formatHistoryLine, formatCorrelationLine, MARKER };

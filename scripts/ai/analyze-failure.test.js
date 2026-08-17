@@ -323,6 +323,29 @@ test("buildFailureReport: a provider without a .name still produces a report, fa
   assert.equal(report.analysis.provider, "unknown");
 });
 
+// --- multi-browser correlation passthrough (PR #33) -------------------------
+
+test("buildFailureReport: sourceContext.browserCorrelation is null when context has no correlation metadata", async () => {
+  const provider = providerReturning([goodItem()]);
+  const report = await buildFailureReport(context, { provider, history: null });
+  assert.equal(report.sourceContext.browserCorrelation, null);
+});
+
+test("buildFailureReport: sourceContext.browserCorrelation carries through unchanged when present on context (observability, not just prompt input)", async () => {
+  const correlation = {
+    browsers: ["chrome", "edge"],
+    failedBrowsers: ["chrome", "edge"],
+    passedBrowsers: [],
+    primaryBrowser: "chrome",
+    additionalFailedBrowsers: ["edge"],
+    failureScope: "multi-browser",
+    sameFailureSignature: true,
+  };
+  const provider = providerReturning([goodItem()]);
+  const report = await buildFailureReport({ ...context, browserCorrelation: correlation }, { provider, history: null });
+  assert.deepEqual(report.sourceContext.browserCorrelation, correlation);
+});
+
 // --- agent policy integration ----------------------------------------------
 // Proves the full pipeline - provider -> parse -> validate -> agent policy
 // -> report - actually applies scripts/ai/agent-policy.js, not just that

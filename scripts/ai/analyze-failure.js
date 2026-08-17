@@ -102,6 +102,14 @@ function pickSourceContext(context) {
     browser: m.browser ?? null,
     ci: m.ci ?? null,
     contextGeneratedAt: context.generatedAt || null,
+    // Deterministic cross-browser correlation metadata (see PR #33's
+    // aggregate-browser-context.js) - carried through onto ai-report.json
+    // unchanged, the same way it was already carried into the prompt (see
+    // qa-agent-prompt.js), purely for observability: future
+    // evaluation/tooling can tell single- from multi-browser failures
+    // without re-deriving it. null for contexts that weren't produced by
+    // the aggregator (e.g. a local run).
+    browserCorrelation: context.browserCorrelation ?? null,
   };
 }
 
