@@ -263,7 +263,7 @@ Each Dataset v2 sample separates the **correlation fact** (what `browserCorrelat
 - Scenario A: `correlationConstruction = pass`, `correlationTransport = pass`, **`correlationReasoning = partial`**
 - Scenario B: `correlationConstruction = pass`, `correlationTransport = pass`, **`correlationReasoning = partial`**
 
-`partial` means correlation reached the model intact and the model's diagnosis was still correct and safe, but its visible reasoning did not cite the cross-browser evidence. This is a real, verified finding, not a defect that has been fixed - **the QA Agent's prompt has not been modified as a result of Dataset v2**; this baseline exists specifically so a *future*, separate, controlled prompt-improvement experiment can be measured against it.
+`partial` means correlation reached the model intact and the model's diagnosis was still correct and safe, but its visible reasoning did not cite the cross-browser evidence. This is a real, verified finding, not a defect that had been fixed as of Dataset v2/Baseline v2 themselves (Roadmap #6) - this baseline exists specifically so a *later*, separate, controlled prompt-improvement experiment could be measured against it. See [Correlation reasoning prompt improvement](#correlation-reasoning-prompt-improvement-roadmap-8) below for that follow-up work and its current status.
 
 ```
 npm run eval:ai:v2           # scores Dataset v2 (6 samples), including correlation quality aggregates
@@ -272,7 +272,19 @@ npm run eval:regression:v2   # compares the current stored evaluation against fr
 
 Regression semantics for the three correlation dimensions mirror classification/action scoring exactly: an explicit ordering (`fail < partial < pass`, with `not_applicable` outside that ordering) drives per-sample `improvement`/`regression`/`unchanged` detection, and the same "any regression anywhere wins" precedence applies across *all* dimensions (classification, `shouldRetry`, `shouldCreateBug`, and all three correlation fields) - a correlation-reasoning improvement on one sample can never mask a classification or action-safety regression on another. As with Dataset v1, there is **no composite score** - correlation quality is reported as enum counts, never averaged into a single number.
 
-`eval:ai:v2`/`eval:regression:v2` are **not yet part of GitHub Actions** - the informational `QA Agent evaluation` CI job still runs only the v1 commands (`eval:ai`/`eval:regression`). Adding v2 informationally alongside v1 is a deliberate, separate follow-up, not bundled with this change.
+`eval:ai:v2`/`eval:regression:v2` now also run in the informational `QA Agent evaluation` CI job, alongside the existing v1 commands (`eval:ai`/`eval:regression`) - see Roadmap #7 below. Same informational semantics as v1: a `REGRESSED` result does not fail the job, only a genuine technical error (invalid dataset/baseline, sample-set mismatch) does.
+
+### Correlation reasoning prompt improvement (Roadmap #8)
+
+Baseline v2 recorded a real, verified gap: `browserCorrelation` was constructed and transported to the model correctly on both Scenario A and Scenario B (`correlationConstruction = pass`, `correlationTransport = pass`), but the model's own visible diagnostic reasoning did not clearly demonstrate having used that cross-browser evidence (`correlationReasoning = partial` on both).
+
+**Phase 1 - prompt contract improvement (this stage, implemented):** the `browserCorrelation` rule in the QA Agent's system prompt (`scripts/ai/qa-agent-prompt.js`) was strengthened to: explicitly distinguish `sameFailureSignature = true` / `false` / `null` semantics (in particular, `null` - insufficient/incomparable evidence - is explicitly called out as *not* the same as `false`); require reconciling correlation with direct current-run evidence, source code, and history rather than reasoning about it in isolation, with direct evidence always taking precedence when they conflict; and require making correlation's diagnostic role visible in `rootCause`/`evidence` when it is materially relevant - while explicitly permitting it to remain inconclusive, and explicitly prohibiting satisfying that requirement by merely restating the raw `browserCorrelation` fields. The change is deliberately generic (no reference to Chrome/Edge specifically, no reference to the controlled-experiment scenarios that motivated it) so it applies equally to any current or future browser combination.
+
+**This prompt change has not yet been behaviorally validated against a live Groq run.** Dataset v2 and Baseline v2 are intentionally untouched by this stage - they are frozen historical evidence and continue to record the pre-change `correlationReasoning = partial` baseline for Scenario A/B, exactly as before. `npm run eval:ai:v2`/`npm run eval:regression:v2` therefore still report `UNCHANGED`, which is the expected and correct result at this stage, not a sign the prompt change had no effect - the evaluator scores stored historical output, it never calls a live model.
+
+**Phase 2 - controlled live re-validation (not started):** separate controlled experiments (reproducing a same-signature and a different-signature multi-browser failure against the improved prompt) are required to measure the live effect.
+
+**Phase 3 - evaluation evidence/baseline update (not started):** only after Phase 2 produces real, Groq-backed results would Dataset v2/Baseline v2 be updated to reflect them.
 
 ### Roadmap
 
@@ -288,10 +300,12 @@ Regression semantics for the three correlation dimensions mirror classification/
 - Multi-browser correlation context - deterministic cross-browser evidence fed into the single AI call, without increasing AI call count
 - Controlled Multi-Browser Correlation Experiment, Scenario A (same signature) and Scenario B (different signatures) - real, Groq-backed CI runs (PR #35, #36) proving correlation construction/transport work correctly and are safe (no unsupported cross-browser inferences), both closed without merge after data collection
 - Evaluation Dataset v2 / Baseline v2 (Roadmap #6) - a separate, additive dataset (Dataset v1's four samples + Scenario A/B) that makes correlation quality measurable and regression-testable, frozen as the baseline *before* any prompt change
+- Informational Dataset v2 CI rollout (Roadmap #7) - the `QA Agent evaluation` job now also runs `eval:ai:v2`/`eval:regression:v2` alongside the v1 commands, fully offline, no new secrets/provider/Cypress dependency, still non-required in branch protection
+- Correlation reasoning prompt contract improvement, Phase 1 (Roadmap #8) - see [above](#correlation-reasoning-prompt-improvement-roadmap-8); a prompt-only change, not yet behaviorally validated against a live model
 
 **Next:**
 
-- Independent verification of Dataset v2, then merge its PR, then a separate informational CI rollout for `eval:ai:v2`/`eval:regression:v2`, then a controlled prompt-improvement experiment measured against Baseline v2 (target: move `correlationReasoning` from `partial` to `pass` on Scenario A/B without regressing classification/action safety anywhere else)
+- Controlled Correlation Re-validation (Roadmap #8, Phases 2-3) - reproduce a same-signature and a different-signature multi-browser failure against the improved prompt with real Groq calls, compare against the historical Baseline v2 findings, and only then update Dataset v2/Baseline v2 with real evidence (target: move `correlationReasoning` from `partial` to `pass` on Scenario A/B without regressing classification/action safety anywhere else)
 
 **Planned / future work** (not implemented yet):
 
