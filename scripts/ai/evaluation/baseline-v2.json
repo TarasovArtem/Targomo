@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "datasetVersion": 2,
+  "samples": {
+    "experiment-2-broken-selector": {
+      "classificationStatus": "fail",
+      "shouldRetryCorrect": false,
+      "shouldCreateBugCorrect": true,
+      "correlationConstruction": "not_applicable",
+      "correlationTransport": "not_applicable",
+      "correlationReasoning": "not_applicable"
+    },
+    "experiment-3-application-like-mismatch": {
+      "classificationStatus": "pass",
+      "shouldRetryCorrect": true,
+      "shouldCreateBugCorrect": true,
+      "correlationConstruction": "not_applicable",
+      "correlationTransport": "not_applicable",
+      "correlationReasoning": "not_applicable"
+    },
+    "experiment-4-deterministic-test-bug-history": {
+      "classificationStatus": "pass",
+      "shouldRetryCorrect": true,
+      "shouldCreateBugCorrect": true,
+      "correlationConstruction": "not_applicable",
+      "correlationTransport": "not_applicable",
+      "correlationReasoning": "not_applicable"
+    },
+    "experiment-5-real-flaky-test": {
+      "classificationStatus": "ambiguous",
+      "shouldRetryCorrect": true,
+      "shouldCreateBugCorrect": true,
+      "correlationConstruction": "not_applicable",
+      "correlationTransport": "not_applicable",
+      "correlationReasoning": "not_applicable"
+    },
+    "experiment-A-multi-browser-same-signature": {
+      "classificationStatus": "pass",
+      "shouldRetryCorrect": true,
+      "shouldCreateBugCorrect": true,
+      "correlationConstruction": "pass",
+      "correlationTransport": "pass",
+      "correlationReasoning": "partial"
+    },
+    "experiment-B-multi-browser-different-signatures": {
+      "classificationStatus": "pass",
+      "shouldRetryCorrect": true,
+      "shouldCreateBugCorrect": true,
+      "correlationConstruction": "pass",
+      "correlationTransport": "pass",
+      "correlationReasoning": "partial"
+    }
+  }
+}
