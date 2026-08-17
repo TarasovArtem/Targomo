@@ -16,6 +16,8 @@
     "eval:regression": "node scripts/ai/evaluation/regression.js",
     "eval:ai:v2": "node scripts/ai/evaluation/evaluate-v2.js",
     "eval:regression:v2": "node scripts/ai/evaluation/regression-v2.js",
+    "eval:ai:v3": "node scripts/ai/evaluation/evaluate-v3.js",
+    "eval:regression:v3": "node scripts/ai/evaluation/regression-v3.js",
     "test:unit": "node --test scripts/ai/*.test.js scripts/ai/providers/*.test.js scripts/ai/evaluation/*.test.js"
   },
   "repository": {
