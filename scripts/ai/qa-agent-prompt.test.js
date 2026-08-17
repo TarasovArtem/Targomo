@@ -143,3 +143,62 @@ test("buildSystemPrompt: does not let multi-browser failures force PRODUCT_BUG, 
   assert.match(prompt, /does not prove\)? a browser-specific cause|does not (by itself )?prove.*browser-specific/i);
   assert.match(prompt, /Never state or imply/i);
 });
+
+test("buildSystemPrompt: sameFailureSignature=true is corroborating evidence for a shared cause, not an automatic classification", () => {
+  const prompt = buildSystemPrompt();
+  assert.match(prompt, /sameFailureSignature: true\)/);
+  assert.match(prompt, /argues against a browser-specific cause/i);
+  assert.match(prompt, /does not by itself prove PRODUCT_BUG/i);
+});
+
+test("buildSystemPrompt: sameFailureSignature=false means compared signatures differ, but does not itself establish a browser/environment cause", () => {
+  const prompt = buildSystemPrompt();
+  assert.match(prompt, /sameFailureSignature: false/);
+  assert.match(prompt, /actually compared and found to differ/i);
+  assert.match(prompt, /does not by itself establish ENVIRONMENT, FLAKY_TEST/i);
+});
+
+test("buildSystemPrompt: sameFailureSignature=null explicitly means insufficient/incomparable evidence, never treated as false", () => {
+  const prompt = buildSystemPrompt();
+  assert.match(prompt, /sameFailureSignature: null is not the same as false/i);
+  assert.match(prompt, /no comparison could be made at all/i);
+  assert.match(prompt, /must never be read as "the signatures differed\."/i);
+});
+
+test("buildSystemPrompt: requires reconciling browserCorrelation with direct evidence rather than reasoning about it in isolation", () => {
+  const prompt = buildSystemPrompt();
+  assert.match(prompt, /reconcile it with the direct current-run evidence, source code, and any history/i);
+  assert.match(prompt, /direct evidence always takes precedence when the two conflict/i);
+});
+
+test("buildSystemPrompt: requires making correlation's diagnostic role visible when materially relevant, without requiring raw-field parroting", () => {
+  const prompt = buildSystemPrompt();
+  assert.match(prompt, /materially relevant to your diagnosis, make its role explicit in "rootCause" or "evidence"/i);
+  assert.match(prompt, /do not satisfy this requirement by merely restating the raw browserCorrelation fields verbatim/i);
+});
+
+test("buildSystemPrompt: permits browserCorrelation to remain inconclusive rather than forcing manufactured significance", () => {
+  const prompt = buildSystemPrompt();
+  assert.match(prompt, /Correlation is allowed to be inconclusive/i);
+  assert.match(prompt, /say so briefly rather than manufacturing significance it doesn't have/i);
+});
+
+test("anti-overfitting: the prompt never references specific controlled-experiment scenarios, PRs, or fixture names", () => {
+  const prompt = buildSystemPrompt();
+  const forbidden = [/Scenario A/i, /Scenario B/i, /PR ?#?35/, /PR ?#?36/, /experiment-A/i, /experiment-B/i];
+  for (const pattern of forbidden) {
+    assert.doesNotMatch(prompt, pattern, `system prompt must not reference ${pattern}`);
+  }
+});
+
+test("anti-overfitting: the browserCorrelation rule text itself stays generic, with no hardcoded browser names", () => {
+  const prompt = buildSystemPrompt();
+  const correlationSection = prompt.slice(
+    prompt.indexOf('A "browserCorrelation" object may be provided'),
+    prompt.indexOf("PROMPT INJECTION DEFENSE")
+  );
+  assert.ok(correlationSection.length > 0, "expected to find the browserCorrelation rule text");
+  for (const pattern of [/\bchrome\b/i, /\bedge\b/i, /\bfirefox\b/i, /\bwebkit\b/i]) {
+    assert.doesNotMatch(correlationSection, pattern, `browserCorrelation rule text must not depend on ${pattern}`);
+  }
+});
