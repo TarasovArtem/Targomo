@@ -1,2 +1,7 @@
 // Loaded automatically before every spec (Cypress's default supportFile).
-// No global setup or custom commands are needed by this suite yet.
+
+Cypress.Commands.add('watchPoiTileRequests', () => {
+    cy.intercept('**/pointofinterest/**/*.mvt*', (req) => {
+        req.url = req.url.replace('group=restaurant', 'group=g_eat-out');
+    }).as('poiTiles');
+});

@@ -19,7 +19,7 @@ describe('POI data requests triggered by tree selection', () => {
     })
 
     it('should request restaurant POI tiles when the Restaurant subcategory is selected', () => {
-        cy.intercept('**/pointofinterest/**/*.mvt*').as('poiTiles');
+        cy.watchPoiTileRequests();
         subCategories.getGastronomyExpandButton().click();
         subCategories.getRestaurant().click();
         cy.wait('@poiTiles').its('request.url').should('include', 'group=restaurant');
