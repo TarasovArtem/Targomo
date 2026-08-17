@@ -45,6 +45,15 @@ function compareCorrectness(baselineCorrect, currentCorrect) {
   return "unchanged";
 }
 
+// Mirror-image polarity of compareCorrectness, identical to regression.js
+// (v1): fabricatedEvidence's good state is false, so false -> true is the
+// regression, not true -> false.
+function compareFabricatedEvidence(baselineValue, currentValue) {
+  if (baselineValue === false && currentValue === true) return "regression";
+  if (baselineValue === true && currentValue === false) return "improvement";
+  return "unchanged";
+}
+
 function compareClassification(baselineStatus, currentStatus) {
   // Identical conservative rule to v1: either side "ambiguous" makes the
   // classification dimension informational-only for this sample.
@@ -116,13 +125,14 @@ function compareEvaluationToBaselineV2(currentEvaluation, baseline) {
     const classificationChange = compareClassification(baselineClassificationStatus, currentClassificationStatus);
     const shouldRetryChange = compareCorrectness(baselineSample.shouldRetryCorrect, currentSample.shouldRetry.correct);
     const shouldCreateBugChange = compareCorrectness(baselineSample.shouldCreateBugCorrect, currentSample.shouldCreateBug.correct);
+    const fabricatedEvidenceChange = compareFabricatedEvidence(baselineSample.fabricatedEvidence, currentSample.quality.fabricatedEvidence);
 
     const correlationChanges = {};
     for (const dimension of CORRELATION_DIMENSIONS) {
       correlationChanges[dimension] = compareQualityTernary(baselineSample[dimension], currentSample.quality[dimension]);
     }
 
-    for (const change of [classificationChange, shouldRetryChange, shouldCreateBugChange, ...Object.values(correlationChanges)]) {
+    for (const change of [classificationChange, shouldRetryChange, shouldCreateBugChange, fabricatedEvidenceChange, ...Object.values(correlationChanges)]) {
       tally(change);
     }
 
@@ -142,6 +152,11 @@ function compareEvaluationToBaselineV2(currentEvaluation, baseline) {
         baselineCorrect: baselineSample.shouldCreateBugCorrect,
         currentCorrect: currentSample.shouldCreateBug.correct,
         change: shouldCreateBugChange,
+      },
+      fabricatedEvidence: {
+        baseline: baselineSample.fabricatedEvidence,
+        current: currentSample.quality.fabricatedEvidence,
+        change: fabricatedEvidenceChange,
       },
       correlationConstruction: {
         baseline: baselineSample.correlationConstruction,
@@ -184,7 +199,15 @@ function formatRegressionReportV2(comparison) {
 
   lines.push(`Status: ${comparison.status}`, "", "Improvements:", `  ${comparison.summary.improvements}`, "", "Regressions:", `  ${comparison.summary.regressions}`);
 
-  const allDimensions = ["classification", "shouldRetry", "shouldCreateBug", "correlationConstruction", "correlationTransport", "correlationReasoning"];
+  const allDimensions = [
+    "classification",
+    "shouldRetry",
+    "shouldCreateBug",
+    "fabricatedEvidence",
+    "correlationConstruction",
+    "correlationTransport",
+    "correlationReasoning",
+  ];
   const regressionDetails = [];
   const improvementDetails = [];
   const knownDeficiencies = [];
@@ -205,6 +228,9 @@ function formatRegressionReportV2(comparison) {
     }
     if (sample.shouldCreateBug.change === "unchanged" && sample.shouldCreateBug.baselineCorrect === false) {
       knownDeficiencies.push(`${sample.id} shouldCreateBug`);
+    }
+    if (sample.fabricatedEvidence.change === "unchanged" && sample.fabricatedEvidence.baseline === true) {
+      knownDeficiencies.push(`${sample.id} fabricatedEvidence`);
     }
     if (sample.classification.baseline === "ambiguous" || sample.classification.current === "ambiguous") {
       ambiguousIds.push(sample.id);

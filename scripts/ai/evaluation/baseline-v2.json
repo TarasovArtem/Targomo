@@ -6,6 +6,7 @@
       "classificationStatus": "fail",
       "shouldRetryCorrect": false,
       "shouldCreateBugCorrect": true,
+      "fabricatedEvidence": false,
       "correlationConstruction": "not_applicable",
       "correlationTransport": "not_applicable",
       "correlationReasoning": "not_applicable"
@@ -14,6 +15,7 @@
       "classificationStatus": "pass",
       "shouldRetryCorrect": true,
       "shouldCreateBugCorrect": true,
+      "fabricatedEvidence": false,
       "correlationConstruction": "not_applicable",
       "correlationTransport": "not_applicable",
       "correlationReasoning": "not_applicable"
@@ -22,6 +24,7 @@
       "classificationStatus": "pass",
       "shouldRetryCorrect": true,
       "shouldCreateBugCorrect": true,
+      "fabricatedEvidence": false,
       "correlationConstruction": "not_applicable",
       "correlationTransport": "not_applicable",
       "correlationReasoning": "not_applicable"
@@ -30,6 +33,7 @@
       "classificationStatus": "ambiguous",
       "shouldRetryCorrect": true,
       "shouldCreateBugCorrect": true,
+      "fabricatedEvidence": false,
       "correlationConstruction": "not_applicable",
       "correlationTransport": "not_applicable",
       "correlationReasoning": "not_applicable"
@@ -38,6 +42,7 @@
       "classificationStatus": "pass",
       "shouldRetryCorrect": true,
       "shouldCreateBugCorrect": true,
+      "fabricatedEvidence": false,
       "correlationConstruction": "pass",
       "correlationTransport": "pass",
       "correlationReasoning": "partial"
@@ -46,6 +51,7 @@
       "classificationStatus": "pass",
       "shouldRetryCorrect": true,
       "shouldCreateBugCorrect": true,
+      "fabricatedEvidence": false,
       "correlationConstruction": "pass",
       "correlationTransport": "pass",
       "correlationReasoning": "partial"

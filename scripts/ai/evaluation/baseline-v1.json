@@ -5,22 +5,26 @@
     "experiment-2-broken-selector": {
       "classificationStatus": "fail",
       "shouldRetryCorrect": false,
-      "shouldCreateBugCorrect": true
+      "shouldCreateBugCorrect": true,
+      "fabricatedEvidence": false
     },
     "experiment-3-application-like-mismatch": {
       "classificationStatus": "pass",
       "shouldRetryCorrect": true,
-      "shouldCreateBugCorrect": true
+      "shouldCreateBugCorrect": true,
+      "fabricatedEvidence": false
     },
     "experiment-4-deterministic-test-bug-history": {
       "classificationStatus": "pass",
       "shouldRetryCorrect": true,
-      "shouldCreateBugCorrect": true
+      "shouldCreateBugCorrect": true,
+      "fabricatedEvidence": false
     },
     "experiment-5-real-flaky-test": {
       "classificationStatus": "ambiguous",
       "shouldRetryCorrect": true,
-      "shouldCreateBugCorrect": true
+      "shouldCreateBugCorrect": true,
+      "fabricatedEvidence": false
     }
   }
 }

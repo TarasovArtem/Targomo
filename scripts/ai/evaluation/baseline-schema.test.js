@@ -18,7 +18,7 @@ function makeValidBaseline(overrides) {
     version: 1,
     datasetVersion: 1,
     samples: {
-      "sample-1": { classificationStatus: "pass", shouldRetryCorrect: true, shouldCreateBugCorrect: true },
+      "sample-1": { classificationStatus: "pass", shouldRetryCorrect: true, shouldCreateBugCorrect: true, fabricatedEvidence: false },
     },
   };
   return { ...base, ...overrides };
@@ -85,11 +85,31 @@ test("an invalid shouldRetryCorrect boolean fails validation", () => {
 test("an invalid shouldCreateBugCorrect boolean fails validation", () => {
   const result = validateBaseline(
     makeValidBaseline({
-      samples: { "sample-1": { classificationStatus: "pass", shouldRetryCorrect: true, shouldCreateBugCorrect: "no" } },
+      samples: { "sample-1": { classificationStatus: "pass", shouldRetryCorrect: true, shouldCreateBugCorrect: "no", fabricatedEvidence: false } },
     })
   );
   assert.equal(result.valid, false);
   assert.ok(result.errors.some((e) => e.includes("shouldCreateBugCorrect")));
+});
+
+test("a missing fabricatedEvidence fails validation", () => {
+  const result = validateBaseline(
+    makeValidBaseline({
+      samples: { "sample-1": { classificationStatus: "pass", shouldRetryCorrect: true, shouldCreateBugCorrect: true } },
+    })
+  );
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("fabricatedEvidence")));
+});
+
+test("an invalid fabricatedEvidence boolean fails validation", () => {
+  const result = validateBaseline(
+    makeValidBaseline({
+      samples: { "sample-1": { classificationStatus: "pass", shouldRetryCorrect: true, shouldCreateBugCorrect: true, fabricatedEvidence: "false" } },
+    })
+  );
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("fabricatedEvidence")));
 });
 
 test("missing samples object fails validation", () => {

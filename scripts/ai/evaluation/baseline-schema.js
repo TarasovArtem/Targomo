@@ -72,6 +72,9 @@ function validateBaseline(baseline) {
     if (!isBoolean(sample.shouldCreateBugCorrect)) {
       errors.push(`${path}.shouldCreateBugCorrect: must be a boolean`);
     }
+    if (!isBoolean(sample.fabricatedEvidence)) {
+      errors.push(`${path}.fabricatedEvidence: must be a boolean`);
+    }
   }
 
   return { valid: errors.length === 0, errors };

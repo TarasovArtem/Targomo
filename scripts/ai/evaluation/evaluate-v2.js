@@ -69,6 +69,11 @@ function formatEvaluationSummaryV2({ metrics, samples }) {
   lines.push(formatQualitativeLine("recommendedFix", metrics.qualitative.recommendedFix));
   lines.push(formatQualitativeLine("historyUsage", metrics.qualitative.historyUsage));
   lines.push("");
+  lines.push("Evidence grounding");
+  lines.push("  Fabricated/unsupported evidence finding:");
+  lines.push(`    No: ${metrics.evidenceGrounding.fabricatedEvidence.false}`);
+  lines.push(`    Yes: ${metrics.evidenceGrounding.fabricatedEvidence.true}`);
+  lines.push("");
   lines.push("Correlation");
   lines.push(`  Applicable samples: ${metrics.correlation.applicable}`);
   lines.push("");

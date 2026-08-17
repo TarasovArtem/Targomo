@@ -22,6 +22,7 @@ function makeValidBaseline(overrides = {}) {
         classificationStatus: "pass",
         shouldRetryCorrect: true,
         shouldCreateBugCorrect: true,
+        fabricatedEvidence: false,
         correlationConstruction: "not_applicable",
         correlationTransport: "not_applicable",
         correlationReasoning: "not_applicable",
@@ -93,6 +94,24 @@ test("an invalid correlation quality state fails validation", () => {
   const result = validateBaselineV2(baseline);
   assert.equal(result.valid, false);
   assert.ok(result.errors.some((e) => e.includes("correlationReasoning")));
+});
+
+test("a missing fabricatedEvidence fails validation", () => {
+  const sample = { ...makeValidBaseline().samples["sample-1"] };
+  delete sample.fabricatedEvidence;
+  const baseline = makeValidBaseline({ samples: { "sample-1": sample } });
+  const result = validateBaselineV2(baseline);
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("fabricatedEvidence")));
+});
+
+test("an invalid fabricatedEvidence boolean fails validation", () => {
+  const baseline = makeValidBaseline({
+    samples: { "sample-1": { ...makeValidBaseline().samples["sample-1"], fabricatedEvidence: "false" } },
+  });
+  const result = validateBaselineV2(baseline);
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("fabricatedEvidence")));
 });
 
 test("a malformed sample (not an object) fails validation", () => {

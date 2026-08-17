@@ -22,7 +22,10 @@ function loadRealBaseline() {
 // Builds a minimal synthetic "current evaluation" sample matching the shape
 // scoring.js's evaluateDataset() actually returns per sample - only the
 // fields compareEvaluationToBaseline() reads.
-function makeCurrentSample(id, { classificationStatus = "correct", shouldRetryCorrect = true, shouldCreateBugCorrect = true } = {}) {
+function makeCurrentSample(
+  id,
+  { classificationStatus = "correct", shouldRetryCorrect = true, shouldCreateBugCorrect = true, fabricatedEvidence = false } = {}
+) {
   return {
     id,
     isAmbiguous: classificationStatus === "ambiguous",
@@ -30,12 +33,12 @@ function makeCurrentSample(id, { classificationStatus = "correct", shouldRetryCo
     shouldRetry: { correct: shouldRetryCorrect, expected: true, actual: shouldRetryCorrect },
     shouldCreateBug: { correct: shouldCreateBugCorrect, expected: true, actual: shouldCreateBugCorrect },
     policyAdjusted: false,
-    quality: { classification: "pass", rootCause: "pass", evidence: "pass", recommendedFix: "pass", historyUsage: "neutral", fabricatedEvidence: false },
+    quality: { classification: "pass", rootCause: "pass", evidence: "pass", recommendedFix: "pass", historyUsage: "neutral", fabricatedEvidence },
   };
 }
 
-function makeBaselineSample({ classificationStatus = "pass", shouldRetryCorrect = true, shouldCreateBugCorrect = true } = {}) {
-  return { classificationStatus, shouldRetryCorrect, shouldCreateBugCorrect };
+function makeBaselineSample({ classificationStatus = "pass", shouldRetryCorrect = true, shouldCreateBugCorrect = true, fabricatedEvidence = false } = {}) {
+  return { classificationStatus, shouldRetryCorrect, shouldCreateBugCorrect, fabricatedEvidence };
 }
 
 // A 4-sample synthetic baseline that mirrors the real Baseline v1's shape
@@ -84,6 +87,13 @@ test("real Dataset v1 vs real Baseline v1: status is UNCHANGED with 0 regression
   assert.equal(exp2.classification.baseline, "fail");
   assert.equal(exp2.shouldRetry.change, "unchanged");
   assert.equal(exp2.shouldRetry.baselineCorrect, false);
+
+  // Every real sample's fabricatedEvidence stays false -> false (unchanged),
+  // never regressed/improved, since the historical dataset is frozen.
+  for (const sample of comparison.samples) {
+    assert.equal(sample.fabricatedEvidence.change, "unchanged", `${sample.id}: fabricatedEvidence`);
+    assert.equal(sample.fabricatedEvidence.baseline, false, `${sample.id}: baseline fabricatedEvidence`);
+  }
 });
 
 test("fixing experiment-2 classification (fail -> pass) alone yields IMPROVED", () => {
@@ -177,6 +187,90 @@ test("an ambiguous sample's shouldCreateBug regression still yields REGRESSED (a
   assert.equal(comparison.status, "REGRESSED");
   assert.equal(comparison.summary.regressions, 1);
   assert.equal(comparison.samples.find((s) => s.id === "exp-5").shouldCreateBug.change, "regression");
+});
+
+test("fabricatedEvidence: false -> true yields REGRESSED", () => {
+  const baseline = makeSyntheticBaseline();
+  const current = makeSyntheticCurrentEvaluation({
+    "exp-3": makeCurrentSample("exp-3", { classificationStatus: "correct", shouldRetryCorrect: true, shouldCreateBugCorrect: true, fabricatedEvidence: true }),
+  });
+  const comparison = compareEvaluationToBaseline(current, baseline);
+
+  assert.equal(comparison.status, "REGRESSED");
+  assert.equal(comparison.summary.regressions, 1);
+  assert.equal(comparison.samples.find((s) => s.id === "exp-3").fabricatedEvidence.change, "regression");
+});
+
+test("fabricatedEvidence: true -> false yields IMPROVED", () => {
+  const baseline = makeSyntheticBaseline({ "exp-3": makeBaselineSample({ fabricatedEvidence: true }) });
+  const current = makeSyntheticCurrentEvaluation({
+    "exp-3": makeCurrentSample("exp-3", { classificationStatus: "correct", shouldRetryCorrect: true, shouldCreateBugCorrect: true, fabricatedEvidence: false }),
+  });
+  const comparison = compareEvaluationToBaseline(current, baseline);
+
+  assert.equal(comparison.status, "IMPROVED");
+  assert.equal(comparison.summary.regressions, 0);
+  assert.equal(comparison.summary.improvements, 1);
+  assert.equal(comparison.samples.find((s) => s.id === "exp-3").fabricatedEvidence.change, "improvement");
+});
+
+test("fabricatedEvidence false->true plus an unrelated classification improvement still yields REGRESSED", () => {
+  const baseline = makeSyntheticBaseline();
+  const current = makeSyntheticCurrentEvaluation({
+    "exp-2": makeCurrentSample("exp-2", { classificationStatus: "correct", shouldRetryCorrect: false, shouldCreateBugCorrect: true }),
+    "exp-3": makeCurrentSample("exp-3", { classificationStatus: "correct", shouldRetryCorrect: true, shouldCreateBugCorrect: true, fabricatedEvidence: true }),
+  });
+  const comparison = compareEvaluationToBaseline(current, baseline);
+
+  assert.equal(comparison.status, "REGRESSED");
+  assert.equal(comparison.summary.improvements, 1);
+  assert.equal(comparison.summary.regressions, 1);
+});
+
+test("fabricatedEvidence true->false plus a classification regression still yields REGRESSED", () => {
+  const baseline = makeSyntheticBaseline({ "exp-3": makeBaselineSample({ fabricatedEvidence: true }) });
+  const current = makeSyntheticCurrentEvaluation({
+    "exp-3": makeCurrentSample("exp-3", { classificationStatus: "correct", shouldRetryCorrect: true, shouldCreateBugCorrect: true, fabricatedEvidence: false }),
+    "exp-4": makeCurrentSample("exp-4", { classificationStatus: "incorrect", shouldRetryCorrect: true, shouldCreateBugCorrect: true }),
+  });
+  const comparison = compareEvaluationToBaseline(current, baseline);
+
+  assert.equal(comparison.status, "REGRESSED");
+  assert.equal(comparison.samples.find((s) => s.id === "exp-3").fabricatedEvidence.change, "improvement");
+  assert.equal(comparison.samples.find((s) => s.id === "exp-4").classification.change, "regression");
+});
+
+test("fabricatedEvidence true->false plus a shouldCreateBug regression still yields REGRESSED", () => {
+  const baseline = makeSyntheticBaseline({ "exp-3": makeBaselineSample({ fabricatedEvidence: true }) });
+  const current = makeSyntheticCurrentEvaluation({
+    "exp-3": makeCurrentSample("exp-3", { classificationStatus: "correct", shouldRetryCorrect: true, shouldCreateBugCorrect: true, fabricatedEvidence: false }),
+    "exp-4": makeCurrentSample("exp-4", { classificationStatus: "correct", shouldRetryCorrect: true, shouldCreateBugCorrect: false }),
+  });
+  const comparison = compareEvaluationToBaseline(current, baseline);
+
+  assert.equal(comparison.status, "REGRESSED");
+  assert.equal(comparison.samples.find((s) => s.id === "exp-3").fabricatedEvidence.change, "improvement");
+  assert.equal(comparison.samples.find((s) => s.id === "exp-4").shouldCreateBug.change, "regression");
+});
+
+// Mandatory masking test: exp-3 worsens (false->true) while exp-4 improves
+// (true->false) at the same time - the aggregate true/false counts across
+// the dataset are identical either way, but per-sample comparison must
+// still catch exp-3's regression rather than letting exp-4's improvement
+// cancel it out in a global count.
+test("fabricatedEvidence aggregate masking: one sample regresses while another improves - still REGRESSED", () => {
+  const baseline = makeSyntheticBaseline({ "exp-4": makeBaselineSample({ fabricatedEvidence: true }) });
+  const current = makeSyntheticCurrentEvaluation({
+    "exp-3": makeCurrentSample("exp-3", { classificationStatus: "correct", shouldRetryCorrect: true, shouldCreateBugCorrect: true, fabricatedEvidence: true }),
+    "exp-4": makeCurrentSample("exp-4", { classificationStatus: "correct", shouldRetryCorrect: true, shouldCreateBugCorrect: true, fabricatedEvidence: false }),
+  });
+  const comparison = compareEvaluationToBaseline(current, baseline);
+
+  assert.equal(comparison.status, "REGRESSED");
+  assert.equal(comparison.samples.find((s) => s.id === "exp-3").fabricatedEvidence.change, "regression");
+  assert.equal(comparison.samples.find((s) => s.id === "exp-4").fabricatedEvidence.change, "improvement");
+  assert.equal(comparison.summary.regressions, 1);
+  assert.equal(comparison.summary.improvements, 1);
 });
 
 test("a sample-set mismatch (current missing a baseline sample) is reported as BASELINE_MISMATCH, not silently ignored", () => {
