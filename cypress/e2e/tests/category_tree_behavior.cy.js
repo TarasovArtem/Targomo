@@ -27,10 +27,6 @@ describe('Category tree behavior', () => {
     it('should let two unrelated top-level categories be selected independently of each other', () => {
         categories.getGastronomy().click().should('have.class', 'mat-checkbox-checked');
         categories.getShopping().click().should('have.class', 'mat-checkbox-checked');
-        if (Cypress.browser.name === 'chrome') {
-            categories.getGastronomy().should('not.have.class', 'mat-checkbox-checked');
-        } else {
-            categories.getShopping().should('not.have.class', 'mat-checkbox-checked');
-        }
+        categories.getGastronomy().should('have.class', 'mat-checkbox-checked');
     })
 })
