@@ -13,7 +13,7 @@ describe('POI data requests triggered by tree selection', () => {
     })
 
     it('should request gastronomy POI tiles when the Gastronomy category is selected', () => {
-        cy.intercept('**/pointofinterest/**/*.mvt*').as('poiTiles');
+        cy.watchPoiTileRequests();
         categories.getGastronomy().click();
         cy.wait('@poiTiles').its('request.url').should('include', 'group=g_eat-out');
     })
