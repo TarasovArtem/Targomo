@@ -1,0 +1,154 @@
+{
+  "version": 1,
+  "samples": [
+    {
+      "id": "experiment-2-broken-selector",
+      "scenario": "broken-selector",
+      "description": "subCategories.js's getFastFood() selector broken ('Fast food' -> 'Fastfood'), causing the Fast Food subcategory checkbox to never be found.",
+      "groundTruth": {
+        "classification": "TEST_BUG",
+        "shouldRetry": false,
+        "shouldCreateBug": false
+      },
+      "actual": {
+        "classification": "FLAKY_TEST",
+        "confidence": 0.78,
+        "shouldRetry": true,
+        "originalShouldCreateBug": false,
+        "finalShouldCreateBug": false,
+        "policyAdjusted": false
+      },
+      "quality": {
+        "classification": "fail",
+        "rootCause": "partial",
+        "evidence": "partial",
+        "recommendedFix": "fail",
+        "historyUsage": "misleading",
+        "fabricatedEvidence": false
+      },
+      "ambiguity": {
+        "isAmbiguous": false,
+        "reason": null
+      },
+      "metadata": {
+        "experiment": 2,
+        "provider": "groq",
+        "model": "openai/gpt-oss-120b",
+        "PR": 25,
+        "workflowRun": 31574576182
+      }
+    },
+    {
+      "id": "experiment-3-application-like-mismatch",
+      "scenario": "application-like-mismatch",
+      "description": "cypress/support/e2e.js's watchPoiTileRequests custom command rewrote outgoing POI tile requests, changing group=restaurant to group=g_eat-out, so the app-observed request never matched the selected subcategory.",
+      "groundTruth": {
+        "classification": "PRODUCT_BUG",
+        "shouldRetry": false,
+        "shouldCreateBug": true
+      },
+      "actual": {
+        "classification": "PRODUCT_BUG",
+        "confidence": 0.66,
+        "shouldRetry": false,
+        "originalShouldCreateBug": true,
+        "finalShouldCreateBug": true,
+        "policyAdjusted": false
+      },
+      "quality": {
+        "classification": "pass",
+        "rootCause": "pass",
+        "evidence": "pass",
+        "recommendedFix": "pass",
+        "historyUsage": "neutral",
+        "fabricatedEvidence": false
+      },
+      "ambiguity": {
+        "isAmbiguous": false,
+        "reason": null
+      },
+      "metadata": {
+        "experiment": 3,
+        "provider": "groq",
+        "model": "openai/gpt-oss-120b",
+        "PR": 26,
+        "workflowRun": 32014019151
+      }
+    },
+    {
+      "id": "experiment-4-deterministic-test-bug-history",
+      "scenario": "deterministic-test-bug-history",
+      "description": "category_tree_behavior.cy.js's tri-state checkbox assertion was flipped (expected class inverted), causing a deterministic, non-flaky test failure.",
+      "groundTruth": {
+        "classification": "TEST_BUG",
+        "shouldRetry": false,
+        "shouldCreateBug": false
+      },
+      "actual": {
+        "classification": "TEST_BUG",
+        "confidence": 0.68,
+        "shouldRetry": false,
+        "originalShouldCreateBug": false,
+        "finalShouldCreateBug": false,
+        "policyAdjusted": false
+      },
+      "quality": {
+        "classification": "pass",
+        "rootCause": "pass",
+        "evidence": "pass",
+        "recommendedFix": "pass",
+        "historyUsage": "neutral",
+        "fabricatedEvidence": false
+      },
+      "ambiguity": {
+        "isAmbiguous": false,
+        "reason": null
+      },
+      "metadata": {
+        "experiment": 4,
+        "provider": "groq",
+        "model": "openai/gpt-oss-120b",
+        "PR": 27,
+        "workflowRun": 32016372911
+      }
+    },
+    {
+      "id": "experiment-5-real-flaky-test",
+      "scenario": "real-flaky-test",
+      "description": "cypress.config.js's setupNodeEvents plus a redefined watchPoiTileRequests in cypress/support/e2e.js delayed/withheld the POI tile response for 40s on the first attempt only (GITHUB_RUN_ATTEMPT=1), producing a genuinely intermittent, retry-recoverable failure.",
+      "groundTruth": {
+        "classification": "FLAKY_TEST",
+        "shouldRetry": true,
+        "shouldCreateBug": false
+      },
+      "actual": {
+        "classification": "EXTERNAL_DEPENDENCY",
+        "confidence": 0.75,
+        "shouldRetry": true,
+        "originalShouldCreateBug": false,
+        "finalShouldCreateBug": false,
+        "policyAdjusted": false
+      },
+      "quality": {
+        "classification": "ambiguous",
+        "rootCause": "partial",
+        "evidence": "partial",
+        "recommendedFix": "pass",
+        "historyUsage": "appropriate",
+        "fabricatedEvidence": false
+      },
+      "ambiguity": {
+        "isAmbiguous": true,
+        "reason": "The controlled mechanism delayed/withheld an HTTP response, which overlaps with the current EXTERNAL_DEPENDENCY definition. Therefore the classification mismatch is a boundary-case ambiguity, not a clean model failure."
+      },
+      "metadata": {
+        "experiment": 5,
+        "provider": "groq",
+        "model": "openai/gpt-oss-120b",
+        "PR": 28,
+        "workflowRun": 32019413817,
+        "retrySuccessWorkflowRun": 32021340947
+      }
+    }
+  ]
+}
