@@ -1,21 +1,29 @@
-# Targomo
+# QA AI Agent
 
-![Cypress E2E Tests](https://github.com/TarasovArtem/Targomo/actions/workflows/cypress.yml/badge.svg?branch=main)
+![Cypress E2E Tests](https://github.com/TarasovArtem/qa-ai-agent/actions/workflows/cypress.yml/badge.svg?branch=main)
 
 #### Description
 
-Cypress E2E test suite for the [Targomo](https://poi.targomo.com) POI (points of interest) map application. A Playwright + TypeScript port of this same suite, with the same scenarios and Page Object Model, lives at [TarasovArtem/TargomoPlaywright](https://github.com/TarasovArtem/TargomoPlaywright).
+QA AI Agent is an AI-assisted automated-test failure triage system that collects failure evidence, correlates multi-browser results, performs one centralized AI analysis, applies application-level safety policy, and evaluates its historical decisions against a versioned regression dataset.
 
-See [TEST_CASES.md](TEST_CASES.md) for the full list of test cases covered by this suite, with preconditions, steps, and expected results for each.
+See [TEST_CASES.md](TEST_CASES.md) for the full list of manual test cases covered by the Cypress suite, with preconditions, steps, and expected results for each.
+
+### Current System Under Test
+
+The repository currently uses the [Targomo](https://poi.targomo.com) POI (points of interest) map application as its real E2E target/demo application - the Cypress suite in `cypress/` exercises Targomo's category tree UI and POI tile requests, and the QA Agent's failure triage is exercised against that suite's real failures.
+
+**Targomo is the current System Under Test. QA AI Agent is the project being developed in this repository.** This distinction matters because the long-term architecture is intended to become portable to additional projects/test suites beyond Targomo - see [Roadmap](#roadmap) - though that portability is not yet implemented; today, the QA Agent is wired specifically to this Cypress suite's report/context format.
+
+A Playwright + TypeScript port of the same Cypress scenarios and Page Object Model, targeting the same Targomo application, lives at [TarasovArtem/TargomoPlaywright](https://github.com/TarasovArtem/TargomoPlaywright) (a separate repository, not part of this project).
 
 
 ### Commands for running tests and files structure
 
 #### Installation
 
-    git clone https://github.com/TarasovArtem/Targomo.git
+    git clone https://github.com/TarasovArtem/qa-ai-agent.git
 
-    cd Targomo
+    cd qa-ai-agent
 
     npm install
 
@@ -200,7 +208,7 @@ Before evaluation infrastructure existed, the QA Agent's real (Groq-backed) beha
 
 | Scenario | Ground truth | Actual (model) | Interpretation |
 |---|---|---|---|
-| #2 Broken selector | `TEST_BUG` | `FLAKY_TEST` @ 0.78 | Clean classification miss |
+| #2 Broken selector | `TEST_BUG` | `FLAKY_TEST` @ 0.78 | Classification miss - the model leaned on run history to support `FLAKY_TEST`, but Dataset v1 curates that history usage as misleading here, not corroborating |
 | #3 Application-like mismatch | `PRODUCT_BUG` | `PRODUCT_BUG` @ 0.66 | Pass |
 | #4 Deterministic test bug, misleading history | `TEST_BUG` | `TEST_BUG` @ 0.68 | Pass |
 | #5 Real flaky test | `FLAKY_TEST` | `EXTERNAL_DEPENDENCY` @ 0.75 | Ambiguous boundary case - the controlled mechanism (a delayed/withheld HTTP response) genuinely overlaps both classifications' definitions; curated as a boundary case, not a clean model failure |
@@ -248,15 +256,21 @@ Key design points:
 - Informational `QA Agent evaluation` CI check
 - Multi-browser correlation context (this change) - deterministic cross-browser evidence fed into the single AI call, without increasing AI call count
 
+**Next:**
+
+- Controlled Multi-Browser Correlation Experiment - a real, Groq-backed CI run with a deliberately introduced two-browser failure, to observe how the model actually uses `browserCorrelation` in a live response (not yet performed; Dataset v1 predates this feature)
+
 **Planned / future work** (not implemented yet):
 
+- Broader browser coverage (Firefox/WebKit) once the current CI sandboxing limitation is resolved
 - Cross-run failure fingerprinting (this PR's correlation is scoped to a single workflow run only)
-- Flaky-test / confidence-based policy refinements
+- Portability / reusable QA Agent architecture - extracting the QA Agent into a package/workflow other test-automation repositories (not just Targomo) can adopt
+- Playwright adapter/integration
+- API testing integration
+- Database/data-layer testing integration
+- Performance/load testing integration
+- Confidence-based policy refinements
 - Structured provider output-schema improvements
-- Automatic GitHub Issue creation from `shouldCreateBug`
+- Human-approved action flow / automatic GitHub Issue creation from `shouldCreateBug`
 - Model/provider comparison, fallback provider
 - Human feedback loop into evaluation
-- Extracting the QA Agent into a reusable package/workflow for other test-automation repositories
-- Broader browser coverage (Firefox/WebKit) once the current CI sandboxing limitation is resolved
-- Performance/load-test analysis integration
-- Database/data-layer validation integration

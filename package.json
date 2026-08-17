@@ -1,5 +1,5 @@
 {
-  "name": "targomo-1",
+  "name": "qa-ai-agent",
   "version": "1.0.0",
   "description": "E2E Tests",
   "main": "index.js",
@@ -18,14 +18,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/TarasovArtem/Targomo.git"
+    "url": "git+https://github.com/TarasovArtem/qa-ai-agent.git"
   },
   "author": "Artem Tarasov",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/TarasovArtem/Targomo/issues"
+    "url": "https://github.com/TarasovArtem/qa-ai-agent/issues"
   },
-  "homepage": "https://github.com/TarasovArtem/Targomo#readme",
+  "homepage": "https://github.com/TarasovArtem/qa-ai-agent#readme",
   "devDependencies": {
     "cypress": "^15.19.0",
     "mochawesome": "^8.0.1"
