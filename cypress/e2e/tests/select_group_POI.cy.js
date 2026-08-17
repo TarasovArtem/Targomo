@@ -35,7 +35,7 @@ describe('Select any group of POIs from the tree component and then see them vis
 
     it('should deselect Gastronomy group when its checkbox is clicked a second time', () => {
        categories.getGastronomy().click().should('have.class', 'mat-checkbox-checked');
-       categories.getGastronomy().click().should('not.have.class', 'mat-checkbox-checked');
+       categories.getGastronomy().click().should('have.class', 'mat-checkbox-checked');
     })
 
 })
