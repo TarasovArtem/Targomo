@@ -12,7 +12,7 @@
     "ai:collect": "node scripts/ai/collect-context.js",
     "ai:history": "node scripts/ai/collect-history.js",
     "ai:analyze": "node scripts/ai/analyze-failure.js",
-    "test:unit": "node --test scripts/ai/*.test.js scripts/ai/providers/*.test.js"
+    "test:unit": "node --test scripts/ai/*.test.js scripts/ai/providers/*.test.js scripts/ai/evaluation/*.test.js"
   },
   "repository": {
     "type": "git",
