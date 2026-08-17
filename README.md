@@ -208,7 +208,7 @@ Before evaluation infrastructure existed, the QA Agent's real (Groq-backed) beha
 
 | Scenario | Ground truth | Actual (model) | Interpretation |
 |---|---|---|---|
-| #2 Broken selector | `TEST_BUG` | `FLAKY_TEST` @ 0.78 | Clean classification miss |
+| #2 Broken selector | `TEST_BUG` | `FLAKY_TEST` @ 0.78 | Classification miss - the model leaned on run history to support `FLAKY_TEST`, but Dataset v1 curates that history usage as misleading here, not corroborating |
 | #3 Application-like mismatch | `PRODUCT_BUG` | `PRODUCT_BUG` @ 0.66 | Pass |
 | #4 Deterministic test bug, misleading history | `TEST_BUG` | `TEST_BUG` @ 0.68 | Pass |
 | #5 Real flaky test | `FLAKY_TEST` | `EXTERNAL_DEPENDENCY` @ 0.75 | Ambiguous boundary case - the controlled mechanism (a delayed/withheld HTTP response) genuinely overlaps both classifications' definitions; curated as a boundary case, not a clean model failure |
