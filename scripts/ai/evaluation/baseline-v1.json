@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "datasetVersion": 1,
+  "samples": {
+    "experiment-2-broken-selector": {
+      "classificationStatus": "fail",
+      "shouldRetryCorrect": false,
+      "shouldCreateBugCorrect": true
+    },
+    "experiment-3-application-like-mismatch": {
+      "classificationStatus": "pass",
+      "shouldRetryCorrect": true,
+      "shouldCreateBugCorrect": true
+    },
+    "experiment-4-deterministic-test-bug-history": {
+      "classificationStatus": "pass",
+      "shouldRetryCorrect": true,
+      "shouldCreateBugCorrect": true
+    },
+    "experiment-5-real-flaky-test": {
+      "classificationStatus": "ambiguous",
+      "shouldRetryCorrect": true,
+      "shouldCreateBugCorrect": true
+    }
+  }
+}
