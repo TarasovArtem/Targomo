@@ -30,6 +30,18 @@ function zeroCounts(values) {
   return counts;
 }
 
+// quality.fabricatedEvidence is boolean, not one of the ternary quality
+// enums - kept as its own { false, true } count rather than forced into
+// QUALITY_TERNARY_VALUES, so its type stays honest about what it records
+// (a fabricated/unsupported-evidence finding, not a graded quality level).
+function countFabricatedEvidence(samples) {
+  const counts = { false: 0, true: 0 };
+  for (const sample of samples) {
+    counts[String(sample.quality.fabricatedEvidence)] += 1;
+  }
+  return counts;
+}
+
 // correct/total, or null when total is 0 - never NaN/Infinity, and never a
 // string, so callers can still do math on it before formatting for display.
 function ratio(correct, total) {
@@ -128,6 +140,12 @@ function evaluateDataset(dataset) {
     shouldCreateBugAccuracy: ratio(shouldCreateBugCorrect, totalSamples),
     policyInterventions,
     qualitative: { rootCause, evidence, recommendedFix, historyUsage },
+    // Reported separately from `qualitative` (never merged in) - it's a
+    // fabricated/unsupported-evidence finding, not a pass/partial/fail
+    // grading like rootCause/evidence/recommendedFix, and no composite
+    // score is ever derived from it (same "no composite score" principle
+    // as the rest of this module).
+    evidenceGrounding: { fabricatedEvidence: countFabricatedEvidence(samples) },
   };
 
   return { metrics, samples };

@@ -73,6 +73,9 @@ function validateBaselineV2(baseline) {
     if (!isBoolean(sample.shouldCreateBugCorrect)) {
       errors.push(`${path}.shouldCreateBugCorrect: must be a boolean`);
     }
+    if (!isBoolean(sample.fabricatedEvidence)) {
+      errors.push(`${path}.fabricatedEvidence: must be a boolean`);
+    }
     if (!CORRELATION_QUALITY_VALUES.includes(sample.correlationConstruction)) {
       errors.push(`${path}.correlationConstruction: must be one of ${CORRELATION_QUALITY_VALUES.join(", ")}`);
     }

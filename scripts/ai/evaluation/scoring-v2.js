@@ -33,6 +33,17 @@ function zeroCounts(values) {
   return counts;
 }
 
+// Same boolean-count treatment as scoring.js (v1) - fabricatedEvidence is
+// not one of the ternary quality enums, so it is never forced into
+// QUALITY_TERNARY_VALUES or the qualitative/correlation aggregates.
+function countFabricatedEvidence(samples) {
+  const counts = { false: 0, true: 0 };
+  for (const sample of samples) {
+    counts[String(sample.quality.fabricatedEvidence)] += 1;
+  }
+  return counts;
+}
+
 function ratio(correct, total) {
   return total === 0 ? null : correct / total;
 }
@@ -138,6 +149,10 @@ function evaluateDatasetV2(dataset) {
     shouldCreateBugAccuracy: ratio(shouldCreateBugCorrect, totalSamples),
     policyInterventions,
     qualitative: { rootCause, evidence, recommendedFix, historyUsage },
+    // Same treatment as v1's scoring.js: a separate, non-composite,
+    // boolean-typed grounding signal - never merged into `qualitative` or
+    // `correlation`.
+    evidenceGrounding: { fabricatedEvidence: countFabricatedEvidence(samples) },
     correlation: {
       applicable: correlationApplicable,
       notApplicable: totalSamples - correlationApplicable,

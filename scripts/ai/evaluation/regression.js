@@ -48,6 +48,18 @@ function compareCorrectness(baselineCorrect, currentCorrect) {
   return "unchanged";
 }
 
+// fabricatedEvidence is the mirror-image polarity of compareCorrectness:
+// false ("no fabricated/unsupported evidence finding") is the good state, so
+// false -> true is the regression, not true -> false. A dedicated function
+// (rather than calling compareCorrectness with flipped arguments) keeps that
+// polarity explicit at the call site instead of relying on the reader to
+// remember to invert it.
+function compareFabricatedEvidence(baselineValue, currentValue) {
+  if (baselineValue === false && currentValue === true) return "regression";
+  if (baselineValue === true && currentValue === false) return "improvement";
+  return "unchanged";
+}
+
 function compareClassification(baselineStatus, currentStatus) {
   // Conservative v1 rule: if either side is "ambiguous", the classification
   // dimension for this sample is informational only and never drives the
@@ -105,8 +117,9 @@ function compareEvaluationToBaseline(currentEvaluation, baseline) {
     // (Steps 14/15), so these two never go through the informational path.
     const shouldRetryChange = compareCorrectness(baselineSample.shouldRetryCorrect, currentSample.shouldRetry.correct);
     const shouldCreateBugChange = compareCorrectness(baselineSample.shouldCreateBugCorrect, currentSample.shouldCreateBug.correct);
+    const fabricatedEvidenceChange = compareFabricatedEvidence(baselineSample.fabricatedEvidence, currentSample.quality.fabricatedEvidence);
 
-    for (const change of [classificationChange, shouldRetryChange, shouldCreateBugChange]) {
+    for (const change of [classificationChange, shouldRetryChange, shouldCreateBugChange, fabricatedEvidenceChange]) {
       if (change === "regression") regressions += 1;
       else if (change === "improvement") improvements += 1;
       else if (change === "informational") informational += 1;
@@ -129,6 +142,11 @@ function compareEvaluationToBaseline(currentEvaluation, baseline) {
         baselineCorrect: baselineSample.shouldCreateBugCorrect,
         currentCorrect: currentSample.shouldCreateBug.correct,
         change: shouldCreateBugChange,
+      },
+      fabricatedEvidence: {
+        baseline: baselineSample.fabricatedEvidence,
+        current: currentSample.quality.fabricatedEvidence,
+        change: fabricatedEvidenceChange,
       },
     });
   }
@@ -162,7 +180,7 @@ function formatRegressionReport(comparison) {
   const ambiguousIds = [];
 
   for (const sample of comparison.samples) {
-    for (const dimension of ["classification", "shouldRetry", "shouldCreateBug"]) {
+    for (const dimension of ["classification", "shouldRetry", "shouldCreateBug", "fabricatedEvidence"]) {
       const change = sample[dimension].change;
       if (change === "regression") regressionDetails.push(`${sample.id} ${dimension}`);
       if (change === "improvement") improvementDetails.push(`${sample.id} ${dimension}`);
@@ -175,6 +193,9 @@ function formatRegressionReport(comparison) {
     }
     if (sample.shouldCreateBug.change === "unchanged" && sample.shouldCreateBug.baselineCorrect === false) {
       knownDeficiencies.push(`${sample.id} shouldCreateBug`);
+    }
+    if (sample.fabricatedEvidence.change === "unchanged" && sample.fabricatedEvidence.baseline === true) {
+      knownDeficiencies.push(`${sample.id} fabricatedEvidence`);
     }
     if (sample.classification.baseline === "ambiguous" || sample.classification.current === "ambiguous") {
       ambiguousIds.push(sample.id);

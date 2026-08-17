@@ -34,6 +34,7 @@ test("formatEvaluationSummaryV2: includes Correlation section computed from the 
   assert.match(output, /Accuracy: 83\.3%/);
   assert.match(output, /shouldCreateBug\n\s+Correct: 6/);
   assert.match(output, /Accuracy: 100\.0%/);
+  assert.match(output, /Evidence grounding\n\s+Fabricated\/unsupported evidence finding:\n\s+No: 6\n\s+Yes: 0/);
   assert.match(output, /Correlation\n\s+Applicable samples: 2/);
   assert.match(output, /Construction:\n\s+pass: 2\n\s+partial: 0\n\s+fail: 0\n\s+not_applicable: 4/);
   assert.match(output, /Transport:\n\s+pass: 2/);

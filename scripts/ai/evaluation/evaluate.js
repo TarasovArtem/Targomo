@@ -67,6 +67,11 @@ function formatEvaluationSummary({ metrics, samples }) {
   lines.push(formatQualitativeLine("evidence", metrics.qualitative.evidence));
   lines.push(formatQualitativeLine("recommendedFix", metrics.qualitative.recommendedFix));
   lines.push(formatQualitativeLine("historyUsage", metrics.qualitative.historyUsage));
+  lines.push("");
+  lines.push("Evidence grounding");
+  lines.push("  Fabricated/unsupported evidence finding:");
+  lines.push(`    No: ${metrics.evidenceGrounding.fabricatedEvidence.false}`);
+  lines.push(`    Yes: ${metrics.evidenceGrounding.fabricatedEvidence.true}`);
 
   const classificationMismatches = samples.filter((s) => s.classification.status === "incorrect");
   if (classificationMismatches.length > 0) {

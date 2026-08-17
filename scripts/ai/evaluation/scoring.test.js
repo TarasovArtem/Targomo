@@ -225,6 +225,40 @@ test("qualitative aggregates count each enum value across samples, not_applicabl
   assert.deepEqual(metrics.qualitative.historyUsage, { appropriate: 1, neutral: 0, misleading: 0, not_clear: 1 });
 });
 
+test("evidenceGrounding.fabricatedEvidence: all-false samples count entirely under false", () => {
+  const dataset = {
+    version: 1,
+    samples: [makeSample({ id: "a" }), makeSample({ id: "b" })],
+  };
+  const { metrics } = evaluateDataset(dataset);
+  assert.deepEqual(metrics.evidenceGrounding.fabricatedEvidence, { false: 2, true: 0 });
+});
+
+test("evidenceGrounding.fabricatedEvidence: a mixed true/false set is counted per sample, not merged into qualitative", () => {
+  const dataset = {
+    version: 1,
+    samples: [
+      makeSample({ id: "a", quality: { ...makeSample().quality, fabricatedEvidence: true } }),
+      makeSample({ id: "b" }),
+      makeSample({ id: "c" }),
+    ],
+  };
+  const { metrics } = evaluateDataset(dataset);
+  assert.deepEqual(metrics.evidenceGrounding.fabricatedEvidence, { false: 2, true: 1 });
+  // Never merged into the pass/partial/fail/not_applicable qualitative
+  // aggregates - fabricatedEvidence is boolean, not a ternary grading.
+  assert.equal(metrics.qualitative.fabricatedEvidence, undefined);
+});
+
+test("evidenceGrounding.fabricatedEvidence is never combined into a composite score", () => {
+  const dataset = { version: 1, samples: [makeSample({ id: "a" })] };
+  const { metrics } = evaluateDataset(dataset);
+  const keys = Object.keys(metrics);
+  for (const key of keys) {
+    assert.doesNotMatch(key, /score/i, `metrics must not contain a composite-sounding key ("${key}")`);
+  }
+});
+
 test("real dataset.json baseline: computed metrics match the current v1 content", () => {
   const dataset = loadRealDataset();
   const { metrics, samples } = evaluateDataset(dataset);
@@ -249,4 +283,6 @@ test("real dataset.json baseline: computed metrics match the current v1 content"
 
   const mismatchSample = samples.find((s) => s.id === "experiment-2-broken-selector");
   assert.equal(mismatchSample.classification.status, "incorrect");
+
+  assert.deepEqual(metrics.evidenceGrounding.fabricatedEvidence, { false: 4, true: 0 });
 });

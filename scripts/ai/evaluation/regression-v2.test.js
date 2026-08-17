@@ -36,7 +36,7 @@ function makeCurrentSample(id, overrides = {}) {
       evidence: "pass",
       recommendedFix: "pass",
       historyUsage: "neutral",
-      fabricatedEvidence: false,
+      fabricatedEvidence: overrides.fabricatedEvidence ?? false,
       correlationConstruction: overrides.correlationConstruction || "not_applicable",
       correlationTransport: overrides.correlationTransport || "not_applicable",
       correlationReasoning: overrides.correlationReasoning || "not_applicable",
@@ -50,6 +50,7 @@ function makeBaselineSample(overrides = {}) {
     classificationStatus: overrides.classificationStatus || "pass",
     shouldRetryCorrect: overrides.shouldRetryCorrect ?? true,
     shouldCreateBugCorrect: overrides.shouldCreateBugCorrect ?? true,
+    fabricatedEvidence: overrides.fabricatedEvidence ?? false,
     correlationConstruction: overrides.correlationConstruction || "not_applicable",
     correlationTransport: overrides.correlationTransport || "not_applicable",
     correlationReasoning: overrides.correlationReasoning || "not_applicable",
@@ -101,6 +102,93 @@ test("real Dataset v2 vs real Baseline v2: status is UNCHANGED with 0 regression
   assert.equal(sampleA.correlationReasoning.current, "partial");
   const sampleB = comparison.samples.find((s) => s.id === "experiment-B-multi-browser-different-signatures");
   assert.equal(sampleB.correlationReasoning.current, "partial");
+
+  // Every real v2 sample's fabricatedEvidence stays false -> false.
+  for (const sample of comparison.samples) {
+    assert.equal(sample.fabricatedEvidence.change, "unchanged", `${sample.id}: fabricatedEvidence`);
+    assert.equal(sample.fabricatedEvidence.baseline, false, `${sample.id}: baseline fabricatedEvidence`);
+  }
+});
+
+test("Scenario A fabricatedEvidence false -> true yields REGRESSED", () => {
+  const baseline = makeSyntheticBaseline();
+  const current = makeSyntheticCurrentEvaluation({
+    "exp-A": makeCurrentSample("exp-A", { correlationConstruction: "pass", correlationTransport: "pass", correlationReasoning: "partial", fabricatedEvidence: true }),
+  });
+  const comparison = compareEvaluationToBaselineV2(current, baseline);
+  assert.equal(comparison.status, "REGRESSED");
+  assert.equal(comparison.samples.find((s) => s.id === "exp-A").fabricatedEvidence.change, "regression");
+});
+
+test("Scenario B fabricatedEvidence false -> true yields REGRESSED", () => {
+  const baseline = makeSyntheticBaseline();
+  const current = makeSyntheticCurrentEvaluation({
+    "exp-B": makeCurrentSample("exp-B", { correlationConstruction: "pass", correlationTransport: "pass", correlationReasoning: "partial", fabricatedEvidence: true }),
+  });
+  const comparison = compareEvaluationToBaselineV2(current, baseline);
+  assert.equal(comparison.status, "REGRESSED");
+  assert.equal(comparison.samples.find((s) => s.id === "exp-B").fabricatedEvidence.change, "regression");
+});
+
+test("fabricatedEvidence true -> false yields IMPROVED", () => {
+  const baseline = makeSyntheticBaseline({ "exp-3": makeBaselineSample({ fabricatedEvidence: true }) });
+  const current = makeSyntheticCurrentEvaluation({
+    "exp-3": makeCurrentSample("exp-3", { fabricatedEvidence: false }),
+  });
+  const comparison = compareEvaluationToBaselineV2(current, baseline);
+  assert.equal(comparison.status, "IMPROVED");
+  assert.equal(comparison.samples.find((s) => s.id === "exp-3").fabricatedEvidence.change, "improvement");
+});
+
+test("correlationReasoning partial -> pass together with fabricatedEvidence false -> true on another sample still yields REGRESSED", () => {
+  const baseline = makeSyntheticBaseline();
+  const current = makeSyntheticCurrentEvaluation({
+    "exp-A": makeCurrentSample("exp-A", { correlationConstruction: "pass", correlationTransport: "pass", correlationReasoning: "pass" }),
+    "exp-B": makeCurrentSample("exp-B", { correlationConstruction: "pass", correlationTransport: "pass", correlationReasoning: "partial", fabricatedEvidence: true }),
+  });
+  const comparison = compareEvaluationToBaselineV2(current, baseline);
+  assert.equal(comparison.status, "REGRESSED");
+  assert.equal(comparison.samples.find((s) => s.id === "exp-A").correlationReasoning.change, "improvement");
+  assert.equal(comparison.samples.find((s) => s.id === "exp-B").fabricatedEvidence.change, "regression");
+});
+
+test("fabricatedEvidence improvement plus a classification regression on another sample still yields REGRESSED", () => {
+  const baseline = makeSyntheticBaseline({ "exp-3": makeBaselineSample({ fabricatedEvidence: true }) });
+  const current = makeSyntheticCurrentEvaluation({
+    "exp-3": makeCurrentSample("exp-3", { fabricatedEvidence: false }),
+    "exp-4": makeCurrentSample("exp-4", { classificationStatus: "incorrect" }),
+  });
+  const comparison = compareEvaluationToBaselineV2(current, baseline);
+  assert.equal(comparison.status, "REGRESSED");
+  assert.equal(comparison.samples.find((s) => s.id === "exp-3").fabricatedEvidence.change, "improvement");
+  assert.equal(comparison.samples.find((s) => s.id === "exp-4").classification.change, "regression");
+});
+
+test("fabricatedEvidence improvement plus a shouldCreateBug regression on another sample still yields REGRESSED", () => {
+  const baseline = makeSyntheticBaseline({ "exp-3": makeBaselineSample({ fabricatedEvidence: true }) });
+  const current = makeSyntheticCurrentEvaluation({
+    "exp-3": makeCurrentSample("exp-3", { fabricatedEvidence: false }),
+    "exp-4": makeCurrentSample("exp-4", { shouldCreateBugCorrect: false }),
+  });
+  const comparison = compareEvaluationToBaselineV2(current, baseline);
+  assert.equal(comparison.status, "REGRESSED");
+  assert.equal(comparison.samples.find((s) => s.id === "exp-3").fabricatedEvidence.change, "improvement");
+  assert.equal(comparison.samples.find((s) => s.id === "exp-4").shouldCreateBug.change, "regression");
+});
+
+// Mandatory masking test: exp-3 worsens (false->true) while exp-4 improves
+// (true->false) at the same time - aggregate true/false counts are
+// unchanged, but per-sample comparison must still catch exp-3's regression.
+test("fabricatedEvidence aggregate masking: one sample regresses while another improves - still REGRESSED", () => {
+  const baseline = makeSyntheticBaseline({ "exp-4": makeBaselineSample({ fabricatedEvidence: true }) });
+  const current = makeSyntheticCurrentEvaluation({
+    "exp-3": makeCurrentSample("exp-3", { fabricatedEvidence: true }),
+    "exp-4": makeCurrentSample("exp-4", { fabricatedEvidence: false }),
+  });
+  const comparison = compareEvaluationToBaselineV2(current, baseline);
+  assert.equal(comparison.status, "REGRESSED");
+  assert.equal(comparison.samples.find((s) => s.id === "exp-3").fabricatedEvidence.change, "regression");
+  assert.equal(comparison.samples.find((s) => s.id === "exp-4").fabricatedEvidence.change, "improvement");
 });
 
 // 2/3. Scenario A/B correlationReasoning partial -> pass = IMPROVED

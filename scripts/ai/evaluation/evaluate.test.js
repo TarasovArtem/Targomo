@@ -34,6 +34,7 @@ test("formatEvaluationSummary: includes all top-level sections and reports misma
   assert.match(output, /shouldRetry\n\s+Correct: 3/);
   assert.match(output, /shouldCreateBug\n\s+Correct: 4/);
   assert.match(output, /Policy\n\s+Interventions: 0/);
+  assert.match(output, /Evidence grounding\n\s+Fabricated\/unsupported evidence finding:\n\s+No: 4\n\s+Yes: 0/);
   assert.match(output, /Classification mismatches\n\s+- experiment-2-broken-selector: expected TEST_BUG, got FLAKY_TEST/);
   assert.match(output, /shouldRetry mismatches\n\s+- experiment-2-broken-selector/);
   assert.match(output, /Ambiguous classifications\n\s+- experiment-5-real-flaky-test: expected FLAKY_TEST, actual EXTERNAL_DEPENDENCY/);

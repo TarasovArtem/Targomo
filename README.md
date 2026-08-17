@@ -286,6 +286,20 @@ Baseline v2 recorded a real, verified gap: `browserCorrelation` was constructed 
 
 **Phase 3 - evaluation evidence/baseline update (not started):** only after Phase 2 produces real, Groq-backed results would Dataset v2/Baseline v2 be updated to reflect them.
 
+### Evidence Grounding Evaluation Protection (Roadmap #9)
+
+A controlled experiment produced one unsupported factual root-cause claim: the model's top-level classification and action decisions (`TEST_BUG`, `shouldRetry = false`, `shouldCreateBug = false`) were correct, but one specific detail inside `rootCause` asserted something the supplied evidence did not actually establish. This is a single controlled observation, not a general claim about how the model behaves - it is documented here only because it exposed a real gap in the evaluation infrastructure, not because it demonstrates a systemic problem.
+
+The gap: `quality.fabricatedEvidence` (a boolean, human-curated finding of exactly this kind) already existed in both Dataset v1 and Dataset v2's schema, and every existing historical sample already recorded `fabricatedEvidence: false` - but the field had no effect on scoring or regression. `scoring.js`/`scoring-v2.js` never surfaced it in `metrics`, and `regression.js`/`regression-v2.js` never compared it against the frozen baseline. A future curated sample recording `fabricatedEvidence: true` would previously have produced zero regression signal.
+
+This phase activates the existing field, purely in the offline evaluation layer:
+
+- `metrics.evidenceGrounding.fabricatedEvidence` now reports `{ false: N, true: N }` counts in both `npm run eval:ai` and `npm run eval:ai:v2` (a boolean count, deliberately not folded into the pass/partial/fail `qualitative` aggregates, and never combined into a composite score)
+- `npm run eval:regression`/`npm run eval:regression:v2` now compare `fabricatedEvidence` per sample against Baseline v1/v2: `false → true` is a regression, `true → false` is an improvement, `false → false`/`true → true` are unchanged (the latter reported as a known deficiency when applicable) - following the exact same "any regression anywhere wins" precedence already used for every other dimension, so a `fabricatedEvidence` regression can never be masked by an unrelated improvement (or vice versa), and aggregate true/false counts staying identical can never hide a per-sample swap
+- Baseline v1/v2 now record `fabricatedEvidence: false` for every existing sample (all currently `false`, matching Dataset v1/v2's historical values exactly)
+
+This phase does not change the production prompt, provider, application policy, Cypress, or GitHub Actions in any way, and does not modify any historical Dataset v1/v2 ground truth, actual output, or curated quality value. `npm run test:unit`/`npm run eval:regression`/`npm run eval:regression:v2` all report the same `UNCHANGED` result as before this phase.
+
 ### Roadmap
 
 **Done:**
@@ -302,10 +316,12 @@ Baseline v2 recorded a real, verified gap: `browserCorrelation` was constructed 
 - Evaluation Dataset v2 / Baseline v2 (Roadmap #6) - a separate, additive dataset (Dataset v1's four samples + Scenario A/B) that makes correlation quality measurable and regression-testable, frozen as the baseline *before* any prompt change
 - Informational Dataset v2 CI rollout (Roadmap #7) - the `QA Agent evaluation` job now also runs `eval:ai:v2`/`eval:regression:v2` alongside the v1 commands, fully offline, no new secrets/provider/Cypress dependency, still non-required in branch protection
 - Correlation reasoning prompt contract improvement, Phase 1 (Roadmap #8) - see [above](#correlation-reasoning-prompt-improvement-roadmap-8); a prompt-only change, not yet behaviorally validated against a live model
+- Evidence Grounding Evaluation Protection (Roadmap #9) - see [above](#evidence-grounding-evaluation-protection-roadmap-9); activates the existing `fabricatedEvidence` signal in v1/v2 scoring and regression, evaluation-only, no production behavior change
 
 **Next:**
 
 - Controlled Correlation Re-validation (Roadmap #8, Phases 2-3) - reproduce a same-signature and a different-signature multi-browser failure against the improved prompt with real Groq calls, compare against the historical Baseline v2 findings, and only then update Dataset v2/Baseline v2 with real evidence (target: move `correlationReasoning` from `partial` to `pass` on Scenario A/B without regressing classification/action safety anywhere else)
+- Evidence Grounding Dataset Expansion (Roadmap #10) - curate the controlled experiment behind Roadmap #9 as a new historical sample without rewriting existing Dataset v1/v2 history, then freeze its grounding finding into a new evaluation baseline/version
 
 **Planned / future work** (not implemented yet):
 

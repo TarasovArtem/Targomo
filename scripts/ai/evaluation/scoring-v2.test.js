@@ -29,6 +29,18 @@ test("real Dataset v2 baseline: classification/action metrics match hand-compute
   assert.equal(metrics.shouldCreateBugCorrect, 6);
   assert.equal(metrics.shouldCreateBugIncorrect, 0);
   assert.equal(metrics.shouldCreateBugAccuracy, 1);
+
+  assert.deepEqual(metrics.evidenceGrounding.fabricatedEvidence, { false: 6, true: 0 });
+});
+
+test("evidenceGrounding.fabricatedEvidence: a mixed true/false synthetic set is counted per sample", () => {
+  const dataset = loadRealDatasetV2();
+  const mutated = {
+    ...dataset,
+    samples: dataset.samples.map((s, i) => (i === 0 ? { ...s, quality: { ...s.quality, fabricatedEvidence: true } } : s)),
+  };
+  const { metrics } = evaluateDatasetV2(mutated);
+  assert.deepEqual(metrics.evidenceGrounding.fabricatedEvidence, { false: 5, true: 1 });
 });
 
 test("Experiment #5 ambiguity semantics are unchanged: excluded from classification denominator, still an 'ambiguous' status", () => {
