@@ -300,6 +300,26 @@ This phase activates the existing field, purely in the offline evaluation layer:
 
 This phase does not change the production prompt, provider, application policy, Cypress, or GitHub Actions in any way, and does not modify any historical Dataset v1/v2 ground truth, actual output, or curated quality value. `npm run test:unit`/`npm run eval:regression`/`npm run eval:regression:v2` all report the same `UNCHANGED` result as before this phase.
 
+### Evidence Grounding Dataset Expansion (Roadmap #10)
+
+**Dataset v1 remains frozen. Dataset v2 remains frozen.** Dataset v3 (`scripts/ai/evaluation/dataset-v3.json`) is a separate, additive dataset: the same six Dataset v2 samples, migrated byte-identical (ground truth, historical actual output, and every existing quality field are never re-curated - a dedicated migration-integrity test proves this), plus one new sample from the controlled correlation-necessary experiment referenced in Roadmap #9: `experiment-41-correlation-necessary-grounding`.
+
+| Dataset | Samples |
+| --- | --- |
+| v1 | 4 |
+| v2 | 6 (v1's 4 + Scenario A + Scenario B) |
+| v3 | 7 (v2's 6 + the grounding sample) |
+
+**The grounding sample, one controlled historical observation:** the controlled defect was a genuine, deterministic test-layer locator mismatch (`subCategories.js`'s `getFoodCourt()` resolving different non-matching label text per browser), reproducing a same-defect-family, different-signature multi-browser failure. Top-level behavior stayed correct - `classification = TEST_BUG`, `shouldRetry = false`, `shouldCreateBug = false` - but the curated quality assessment records a real evidence-grounding failure: `rootCause = fail`, `evidence = fail`, `recommendedFix = partial`, `fabricatedEvidence = true`. Correlation construction and transport both passed (`pass`/`pass`), but `correlationReasoning = fail` - the omitted correlation evidence directly contributed to the unsupported root-cause claim. This is not a general claim that the model fabricates evidence; it is one curated, verified data point, encoded so a future prompt change can be measured against it.
+
+`npm run eval:ai:v3`/`npm run eval:regression:v3` score and regression-protect Dataset v3/Baseline v3 exactly like v1/v2 (`scoring-v3.js`, `regression-v3.js`, same "any regression anywhere wins" precedence, same per-sample - never aggregate-only - comparison), reusing Roadmap #9's `fabricatedEvidence` semantics without modification.
+
+**Known-deficiency semantics, not an automatic regression:** Baseline v3 freezes the grounding sample's `fabricatedEvidence = true` as its starting state, exactly the same way Baseline v1 already freezes `experiment-2-broken-selector`'s classification failure as a known deficiency rather than a live regression. `npm run eval:regression:v3` therefore reports `Status: UNCHANGED` today, listing `experiment-41-correlation-necessary-grounding fabricatedEvidence` under "Known deficiencies" - not under "Regressions". If a future prompt change causes this specific sample to be re-evaluated with `fabricatedEvidence: false`, that is a real, regression-comparator-recognized `IMPROVEMENT`; `fabricatedEvidence` staying `true` is `UNCHANGED`, not a fresh regression against itself.
+
+**Known limitation (unchanged since Roadmap #9, not something this phase fixes):** `rootCause`/`evidence`/`recommendedFix` are aggregated in `scoring-v3.js`'s `metrics.qualitative`, but - like v1/v2 - are **not** individually per-sample regression-protected in `regression-v3.js`. Only `classification`/`shouldRetry`/`shouldCreateBug`/`fabricatedEvidence`/the three `correlation*` dimensions are. A future sample where `rootCause` silently degrades from `pass` to `fail` would not, on its own, flip `eval:regression:v3`'s status.
+
+This phase does not change the production prompt, provider, application policy, Cypress, or Dataset v1/v2/Baseline v1/v2 in any way. Dataset v3/Baseline v3 are **not** part of GitHub Actions in this phase - `QA Agent evaluation` still runs only the v1/v2 commands; a v3 CI rollout (mirroring Roadmap #7's v2 rollout) is a separate, future change.
+
 ### Roadmap
 
 **Done:**
@@ -317,11 +337,12 @@ This phase does not change the production prompt, provider, application policy, 
 - Informational Dataset v2 CI rollout (Roadmap #7) - the `QA Agent evaluation` job now also runs `eval:ai:v2`/`eval:regression:v2` alongside the v1 commands, fully offline, no new secrets/provider/Cypress dependency, still non-required in branch protection
 - Correlation reasoning prompt contract improvement, Phase 1 (Roadmap #8) - see [above](#correlation-reasoning-prompt-improvement-roadmap-8); a prompt-only change, not yet behaviorally validated against a live model
 - Evidence Grounding Evaluation Protection (Roadmap #9) - see [above](#evidence-grounding-evaluation-protection-roadmap-9); activates the existing `fabricatedEvidence` signal in v1/v2 scoring and regression, evaluation-only, no production behavior change
+- Evidence Grounding Dataset Expansion (Roadmap #10) - see [above](#evidence-grounding-dataset-expansion-roadmap-10); additive Dataset v3/Baseline v3 (Dataset v2's six samples + the grounding sample), `fabricatedEvidence = true` frozen as a known deficiency, not in CI yet
 
 **Next:**
 
 - Controlled Correlation Re-validation (Roadmap #8, Phases 2-3) - reproduce a same-signature and a different-signature multi-browser failure against the improved prompt with real Groq calls, compare against the historical Baseline v2 findings, and only then update Dataset v2/Baseline v2 with real evidence (target: move `correlationReasoning` from `partial` to `pass` on Scenario A/B without regressing classification/action safety anywhere else)
-- Evidence Grounding Dataset Expansion (Roadmap #10) - curate the controlled experiment behind Roadmap #9 as a new historical sample without rewriting existing Dataset v1/v2 history, then freeze its grounding finding into a new evaluation baseline/version
+- Evidence Grounding Prompt Improvement (Roadmap #11) - a minimal claim-level grounding contract so the model can preserve a well-supported top-level classification while explicitly hedging or labeling unsupported lower-level details instead of presenting them as observed facts, then a new controlled live re-validation against the Experiment #41 scenario measured against Dataset v3/Baseline v3
 
 **Planned / future work** (not implemented yet):
 
