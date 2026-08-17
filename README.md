@@ -243,6 +243,37 @@ Key design points:
 - **`shouldCreateBug` correctness is a protected safety invariant** - any sample whose `shouldCreateBug` action goes from correct to incorrect is always a `REGRESSED` result, even if classification simultaneously improved and even for an ambiguous-classification sample.
 - **`QA Agent evaluation` (the CI check) is currently informational.** It runs `eval:ai` and `eval:regression` on every push/PR and shows the result in the job log; a `REGRESSED` comparison does **not** fail the job or block a merge today - only a technical failure (invalid dataset/baseline, a runtime crash) does. It is **not** a required branch-protection check.
 
+### Multi-browser evaluation (Dataset v2)
+
+Roadmap #6. **Dataset v1 stays exactly as it was** - it predates multi-browser correlation entirely and is never mutated. Dataset v2 (`scripts/ai/evaluation/dataset-v2.json`) is a separate, additive dataset: the same four Dataset v1 samples (migrated byte-identical - ground truth, historical actual output, and existing quality fields are never re-curated) plus two new, correlation-aware samples from the real Controlled Multi-Browser Correlation Experiment:
+
+- **Scenario A** (same-signature) - Chrome and Edge fail with an identical deterministic signature in the same workflow run.
+- **Scenario B** (different-signatures) - Chrome and Edge fail the same test, but with genuinely different deterministic signatures.
+
+Both were real, Groq-backed CI runs (PR #35 and #36, closed without merge after data collection - the controlled failures were reverted, same pattern as Controlled Experiments #2-#5).
+
+Each Dataset v2 sample separates the **correlation fact** (what `browserCorrelation` actually observed - `correlation: { applicable, observed }`, migrated samples get `applicable: false, observed: null`) from the **correlation quality judgment** (three new `quality.*` fields, using the same `pass | partial | fail | not_applicable` vocabulary already used for `rootCause`/`evidence`/`recommendedFix`):
+
+- `correlationConstruction` - does the recorded correlation object correctly reflect the real, independently-verified browser outcomes for that run?
+- `correlationTransport` - is it proven (from the real `ai-report.json` artifact) to have reached the actual provider prompt path?
+- `correlationReasoning` - did the model's visible diagnosis materially and correctly use that evidence?
+
+**Current Baseline v2 (`scripts/ai/evaluation/baseline-v2.json`) - the state before any prompt change:**
+
+- Scenario A: `correlationConstruction = pass`, `correlationTransport = pass`, **`correlationReasoning = partial`**
+- Scenario B: `correlationConstruction = pass`, `correlationTransport = pass`, **`correlationReasoning = partial`**
+
+`partial` means correlation reached the model intact and the model's diagnosis was still correct and safe, but its visible reasoning did not cite the cross-browser evidence. This is a real, verified finding, not a defect that has been fixed - **the QA Agent's prompt has not been modified as a result of Dataset v2**; this baseline exists specifically so a *future*, separate, controlled prompt-improvement experiment can be measured against it.
+
+```
+npm run eval:ai:v2           # scores Dataset v2 (6 samples), including correlation quality aggregates
+npm run eval:regression:v2   # compares the current stored evaluation against frozen Baseline v2
+```
+
+Regression semantics for the three correlation dimensions mirror classification/action scoring exactly: an explicit ordering (`fail < partial < pass`, with `not_applicable` outside that ordering) drives per-sample `improvement`/`regression`/`unchanged` detection, and the same "any regression anywhere wins" precedence applies across *all* dimensions (classification, `shouldRetry`, `shouldCreateBug`, and all three correlation fields) - a correlation-reasoning improvement on one sample can never mask a classification or action-safety regression on another. As with Dataset v1, there is **no composite score** - correlation quality is reported as enum counts, never averaged into a single number.
+
+`eval:ai:v2`/`eval:regression:v2` are **not yet part of GitHub Actions** - the informational `QA Agent evaluation` CI job still runs only the v1 commands (`eval:ai`/`eval:regression`). Adding v2 informationally alongside v1 is a deliberate, separate follow-up, not bundled with this change.
+
 ### Roadmap
 
 **Done:**
@@ -254,11 +285,13 @@ Key design points:
 - Deterministic offline evaluation runner
 - Baseline v1 + per-sample regression comparator
 - Informational `QA Agent evaluation` CI check
-- Multi-browser correlation context (this change) - deterministic cross-browser evidence fed into the single AI call, without increasing AI call count
+- Multi-browser correlation context - deterministic cross-browser evidence fed into the single AI call, without increasing AI call count
+- Controlled Multi-Browser Correlation Experiment, Scenario A (same signature) and Scenario B (different signatures) - real, Groq-backed CI runs (PR #35, #36) proving correlation construction/transport work correctly and are safe (no unsupported cross-browser inferences), both closed without merge after data collection
+- Evaluation Dataset v2 / Baseline v2 (Roadmap #6) - a separate, additive dataset (Dataset v1's four samples + Scenario A/B) that makes correlation quality measurable and regression-testable, frozen as the baseline *before* any prompt change
 
 **Next:**
 
-- Controlled Multi-Browser Correlation Experiment - a real, Groq-backed CI run with a deliberately introduced two-browser failure, to observe how the model actually uses `browserCorrelation` in a live response (not yet performed; Dataset v1 predates this feature)
+- Independent verification of Dataset v2, then merge its PR, then a separate informational CI rollout for `eval:ai:v2`/`eval:regression:v2`, then a controlled prompt-improvement experiment measured against Baseline v2 (target: move `correlationReasoning` from `partial` to `pass` on Scenario A/B without regressing classification/action safety anywhere else)
 
 **Planned / future work** (not implemented yet):
 
