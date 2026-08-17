@@ -59,32 +59,68 @@ or, without picking a browser (uses Cypress's default):
 
 ### Continuous Integration
 
-Cypress E2E tests are automatically executed with GitHub Actions ([.github/workflows/cypress.yml](.github/workflows/cypress.yml)).
-
-Tests run on:
+GitHub Actions ([.github/workflows/cypress.yml](.github/workflows/cypress.yml)) runs on:
 
 - pushes to `main`
 - pull requests targeting `main`
 - manual workflow execution (`workflow_dispatch`)
 
-The pipeline:
+Four independent jobs run per workflow trigger:
 
-1. Checks out the repository
-2. Installs Node.js dependencies with `npm ci`
-3. Runs the Cypress E2E suite against the live app (Chrome and Edge, in parallel - Firefox is excluded from CI due to a known Firefox-in-Docker launch issue; run it locally with `npm run firefox`)
-4. Uploads screenshots for failed runs, videos, and (on failure) the structured test report and AI analysis as workflow artifacts
+```
+                         ┌──────────────────┐
+                         │    Unit tests    │
+                         └──────────────────┘
+
+PR / push
+   │
+   ├──────────────→ QA Agent evaluation
+   │                  │
+   │                  ├─ eval:ai
+   │                  └─ eval:regression
+   │
+   └→ Cypress matrix
+        │
+        ├─ Chrome ─┐
+        │          │
+        └─ Edge ───┤
+                   ↓
+           Browser aggregation
+                   ↓
+          Multi-browser correlation
+                   ↓
+              QA AI triage
+                   ↓
+             ONE Groq call
+                   ↓
+        Policy-safe AI report
+```
+
+- **Unit tests** - pure-JS tests for `scripts/ai/` (provider contract, prompt building, aggregation, evaluation/regression logic, etc. - see `npm run test:unit`). No browser, no network, no secrets.
+- **QA Agent evaluation** - runs `npm run eval:ai` and `npm run eval:regression` against the offline Evaluation Dataset/Baseline (see [Evaluation infrastructure](#evaluation-infrastructure) below). Fully offline, no AI provider calls. **Informational only** - see that section for what that means.
+- **Cypress matrix** - runs the E2E suite against the live app in Chrome and Edge, in parallel (Firefox is excluded from CI due to a known Firefox-in-Docker launch issue; run it locally with `npm run firefox`). Uploads screenshots for failed runs, videos, and (on failure) the structured test report as workflow artifacts. This job's own pass/fail is the suite's authoritative result - nothing downstream (aggregation, AI analysis) can turn a failed Cypress run green.
+- **QA AI triage** - runs after the Cypress matrix, at most once per workflow run regardless of how many browsers failed (see [QA Agent](#qa-agent-ai-failure-analysis) below).
+
+Required branch-protection checks are `Unit tests`, `Cypress - chrome`, and `Cypress - edge`. `QA Agent evaluation` and `QA AI triage` are informational/diagnostic and are not required.
 
 ### QA Agent (AI failure analysis)
 
 The QA Agent's AI backend is a swappable **provider abstraction** (`scripts/ai/providers/`), selected at runtime via the `AI_PROVIDER` environment variable.
 
 ```
-Cypress
-   │
+Cypress (Chrome)      Cypress (Edge)
+   │  browser-result.json      │  browser-result.json
+   │  context.json (on failure)│  context.json (on failure)
+   ▼                           ▼
+        Browser aggregation (scripts/ai/aggregate-browser-context.js)
+   │  reads every browser's outcome; decides whether ANY failed;
+   │  deterministically picks ONE primary failing browser;
+   │  builds cross-browser correlation metadata (below)
    ▼
-Failure Context Collector (scripts/ai/collect-context.js)
+Failure Context Collector output + browserCorrelation
    │  failed test names, errors, relevant spec/page-object source,
-   │  browser, known project constraints - no secrets, no full repo dump
+   │  browser, known project constraints, browser correlation -
+   │  no secrets, no full repo dump
    ▼
 QA prompt (scripts/ai/qa-agent-prompt.js)
    ▼
@@ -95,10 +131,16 @@ raw model response (a string - never trusted as-is)
 validation / safeguards (scripts/ai/analyze-failure.js)
    │  JSON parsing, classification/confidence checks, arbitrary-wait guard
    ▼
+application action policy (scripts/ai/agent-policy.js) - see below
+   ▼
 enriched AI report (reports/ai/ai-report.json)
    ▼
 PR comment (pull_request runs only)
 ```
+
+**Centralized triage, one AI call per run.** The browser matrix jobs (Chrome, Edge) never call an AI provider themselves - they only record their own pass/fail outcome and, on failure, a structured failure context. A separate, downstream `QA AI triage` job runs once per workflow run, aggregates every browser's result, and performs **at most one** real AI analysis call - never once per browser. On a fully green run, `QA AI triage` still runs but performs zero AI calls (`No E2E failures detected; AI triage skipped.`).
+
+**Multi-browser correlation** (since PR #33). When more than one browser fails, the aggregator still analyzes only one primary browser's failure (Chrome, then Edge, by priority) - but it now also builds deterministic `browserCorrelation` metadata from *every* browser's outcome and attaches it to that primary context before the (single) AI call: which browsers ran, which passed, which failed, which one is primary, and - only when at least two browsers failed with comparable evidence - whether their failures share the same signature (`true`/`false`), or `null` when that can't be determined. This gives the model cross-browser evidence (e.g. "the same failure also reproduced on Edge" or "Edge passed while Chrome failed") without ever increasing the number of AI calls or letting correlation alone decide a classification - see rule 10 in `scripts/ai/qa-agent-prompt.js` for the exact non-overclaiming guidance given to the model.
 
 **Provider contract:**
 
@@ -119,7 +161,18 @@ This is a deliberate choice, not a bug: the project previously called [GitHub Mo
 
 There is intentionally **no fallback from Groq to MockProvider**. If `AI_PROVIDER=groq` and `AI_API_KEY`/`AI_MODEL` are missing, or the Groq API call fails, the analyzer fails honestly (`fail()` / a warning in the workflow) rather than silently substituting a fabricated mock analysis - "AI analysis unavailable" is always more honest than a fake result. Cypress's own screenshots, videos, and structured test report are collected independently and are unaffected either way (see the workflow's upload-artifact steps).
 
-When an E2E job fails, a QA Agent step analyzes the failure and classifies it as `PRODUCT_BUG`, `TEST_BUG`, `FLAKY_TEST`, `ENVIRONMENT`, `EXTERNAL_DEPENDENCY`, or `UNKNOWN`, before recommending a fix. It never changes whether the job passes or fails - it's a diagnostic layer on top of the real test result, not a gate: Cypress's own pass/fail is always what determines the workflow's final status, regardless of whether AI analysis ran, succeeded, or failed.
+When any E2E job fails, the centralized `QA AI triage` step analyzes the selected primary failure and classifies it as `PRODUCT_BUG`, `TEST_BUG`, `FLAKY_TEST`, `ENVIRONMENT`, `EXTERNAL_DEPENDENCY`, or `UNKNOWN`, before recommending a fix. It never changes whether the job passes or fails - it's a diagnostic layer on top of the real test result, not a gate: Cypress's own pass/fail is always what determines the workflow's final status, regardless of whether AI analysis ran, succeeded, or failed.
+
+#### Application action policy
+
+The model's classification, confidence, `shouldRetry`, and `shouldCreateBug` are a **recommendation**, never an authoritative action decision. A separate, deterministic application layer (`scripts/ai/agent-policy.js`) makes the actual call:
+
+- Only a `PRODUCT_BUG` classification may keep a model-recommended `shouldCreateBug: true`.
+- Every other classification (`TEST_BUG`, `FLAKY_TEST`, `ENVIRONMENT`, `EXTERNAL_DEPENDENCY`, `UNKNOWN`) has its `shouldCreateBug` forced to `false`, regardless of what the model suggested.
+
+This is a ceiling on which classifications *may* create a bug, not a floor that automatically files one for every `PRODUCT_BUG` - a separate confidence-threshold policy is future work (see [Roadmap](#roadmap)), not implemented today. There is currently **no automatic GitHub Issue creation** - `shouldCreateBug` is a field in the report/PR comment for a human to act on, not an automated trigger.
+
+The final report distinguishes the model's original recommendation (`originalShouldCreateBug`) from the application's final decision (`finalShouldCreateBug`/`shouldCreateBug`) and records whether policy actually overrode the model (`policyAdjusted`) - see the [Evaluation infrastructure](#evaluation-infrastructure) section for how this distinction is used in offline evaluation.
 
 **Local development** - `AI_PROVIDER=mock`, no external API, no account, no key:
 
@@ -140,3 +193,70 @@ AI_API_KEY: ${{ secrets.GROQ_API_KEY }}
 `GROQ_API_KEY` exists only as a **GitHub repository secret** (Settings → Secrets and variables → Actions) - it is never committed, never placed in a `.env` file, and never printed to a log; the workflow maps it to the generic `AI_API_KEY` application variable so that `scripts/ai/config.js` and `analyze-failure.js` stay provider-neutral and never learn Groq's name. `GITHUB_TOKEN` is unrelated and still used elsewhere in the pipeline (flaky-test history via the Actions API, posting PR comments) - never as an AI inference credential.
 
 `AI_PROVIDER` (default `mock`), `AI_MODEL`, and `AI_API_KEY` are read from `scripts/ai/config.js`; an unrecognized `AI_PROVIDER` value throws a clear error rather than silently falling back to a real provider.
+
+### Controlled experiments
+
+Before evaluation infrastructure existed, the QA Agent's real (Groq-backed) behavior was validated against four deliberately-introduced, pre-registered-ground-truth failure scenarios in CI. These four runs are now Dataset v1's only samples (see below) - historical, real model output, kept exactly as recorded, never rewritten to match a preferred answer:
+
+| Scenario | Ground truth | Actual (model) | Interpretation |
+|---|---|---|---|
+| #2 Broken selector | `TEST_BUG` | `FLAKY_TEST` @ 0.78 | Clean classification miss |
+| #3 Application-like mismatch | `PRODUCT_BUG` | `PRODUCT_BUG` @ 0.66 | Pass |
+| #4 Deterministic test bug, misleading history | `TEST_BUG` | `TEST_BUG` @ 0.68 | Pass |
+| #5 Real flaky test | `FLAKY_TEST` | `EXTERNAL_DEPENDENCY` @ 0.75 | Ambiguous boundary case - the controlled mechanism (a delayed/withheld HTTP response) genuinely overlaps both classifications' definitions; curated as a boundary case, not a clean model failure |
+
+### Evaluation infrastructure
+
+An offline, deterministic layer for scoring the QA Agent's stored historical outputs against pre-registered ground truth - it never calls Groq, never re-runs an experiment, and never changes what actually happened during a real run.
+
+```
+dataset.json (Dataset v1 - the four experiments above, frozen)
+   ↓
+validateDataset()
+   ↓
+evaluateDataset()  ── classification / shouldRetry / shouldCreateBug accuracy, qualitative aggregates
+   ↓
+baseline-v1.json (Baseline v1 - frozen per-sample status)
+   ↓
+compareEvaluationToBaseline()  ── per-sample regression comparison
+   ↓
+regression report (UNCHANGED / IMPROVED / REGRESSED)
+```
+
+```
+npm run eval:ai           # scores Dataset v1, prints classification/shouldRetry/shouldCreateBug accuracy
+npm run eval:regression   # compares the current stored evaluation against frozen Baseline v1
+```
+
+Key design points:
+
+- **Ambiguous samples are excluded from strict classification accuracy** but remain fully scored for `shouldRetry`/`shouldCreateBug` - Experiment #5's boundary-case status doesn't get silently smoothed over into a clean pass or fail.
+- **Regression comparison is per-sample, not aggregate-accuracy-based.** A sample that goes from wrong to right while a different sample goes from right to wrong leaves aggregate accuracy unchanged, but is a real regression - the comparator is built specifically not to be fooled by that.
+- **`shouldCreateBug` correctness is a protected safety invariant** - any sample whose `shouldCreateBug` action goes from correct to incorrect is always a `REGRESSED` result, even if classification simultaneously improved and even for an ambiguous-classification sample.
+- **`QA Agent evaluation` (the CI check) is currently informational.** It runs `eval:ai` and `eval:regression` on every push/PR and shows the result in the job log; a `REGRESSED` comparison does **not** fail the job or block a merge today - only a technical failure (invalid dataset/baseline, a runtime crash) does. It is **not** a required branch-protection check.
+
+### Roadmap
+
+**Done:**
+
+- Centralized, single-call-per-run QA AI triage
+- Application-level `shouldCreateBug` safeguard (LLM recommends, application decides)
+- Controlled experiments #2-#5 against the real Groq provider
+- Evaluation Dataset v1 (frozen historical ground truth + actual outputs)
+- Deterministic offline evaluation runner
+- Baseline v1 + per-sample regression comparator
+- Informational `QA Agent evaluation` CI check
+- Multi-browser correlation context (this change) - deterministic cross-browser evidence fed into the single AI call, without increasing AI call count
+
+**Planned / future work** (not implemented yet):
+
+- Cross-run failure fingerprinting (this PR's correlation is scoped to a single workflow run only)
+- Flaky-test / confidence-based policy refinements
+- Structured provider output-schema improvements
+- Automatic GitHub Issue creation from `shouldCreateBug`
+- Model/provider comparison, fallback provider
+- Human feedback loop into evaluation
+- Extracting the QA Agent into a reusable package/workflow for other test-automation repositories
+- Broader browser coverage (Firefox/WebKit) once the current CI sandboxing limitation is resolved
+- Performance/load-test analysis integration
+- Database/data-layer validation integration

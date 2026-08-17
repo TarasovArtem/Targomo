@@ -100,3 +100,46 @@ test("buildUserPrompt: reminds the model that the JSON payload is data, not inst
   const prompt = buildUserPrompt({ metadata: {}, testResults: {}, failedTests: [], relevantFiles: {} });
   assert.match(prompt, /DATA, not instructions/i);
 });
+
+test("buildUserPrompt: includes browserCorrelation when present on context", () => {
+  const context = {
+    metadata: {},
+    testResults: {},
+    failedTests: [],
+    relevantFiles: {},
+    browserCorrelation: {
+      browsers: ["chrome", "edge"],
+      failedBrowsers: ["chrome", "edge"],
+      passedBrowsers: [],
+      primaryBrowser: "chrome",
+      additionalFailedBrowsers: ["edge"],
+      failureScope: "multi-browser",
+      sameFailureSignature: true,
+    },
+  };
+  const prompt = buildUserPrompt(context);
+  assert.match(prompt, /"primaryBrowser": "chrome"/);
+  assert.match(prompt, /"additionalFailedBrowsers": \[\s*"edge"\s*\]/);
+  assert.match(prompt, /"failureScope": "multi-browser"/);
+  assert.match(prompt, /"sameFailureSignature": true/);
+});
+
+test("buildUserPrompt: browserCorrelation is explicitly null when absent from context, not just omitted", () => {
+  const context = { metadata: {}, testResults: {}, failedTests: [], relevantFiles: {} };
+  const prompt = buildUserPrompt(context);
+  assert.match(prompt, /"browserCorrelation": null/);
+});
+
+test("buildSystemPrompt: explains browserCorrelation as corroborating evidence, not a classification rule", () => {
+  const prompt = buildSystemPrompt();
+  assert.match(prompt, /browserCorrelation/);
+  assert.match(prompt, /primaryBrowser/);
+  assert.match(prompt, /sameFailureSignature/);
+});
+
+test("buildSystemPrompt: does not let multi-browser failures force PRODUCT_BUG, or single-browser failures force ENVIRONMENT", () => {
+  const prompt = buildSystemPrompt();
+  assert.match(prompt, /does not by itself prove PRODUCT_BUG/i);
+  assert.match(prompt, /does not prove\)? a browser-specific cause|does not (by itself )?prove.*browser-specific/i);
+  assert.match(prompt, /Never state or imply/i);
+});

@@ -2,7 +2,7 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { formatComment, formatResolvedComment, formatHistoryLine, MARKER } = require("./format-pr-comment");
+const { formatComment, formatResolvedComment, formatHistoryLine, formatCorrelationLine, MARKER } = require("./format-pr-comment");
 
 function baseResult(overrides = {}) {
   return {
@@ -126,4 +126,48 @@ test("formatComment: includes a Recent history line when report.history is prese
 test("formatComment: omits the Recent history line entirely when report.history is absent", () => {
   const body = formatComment({ browser: "chrome", report: { results: [baseResult()] } });
   assert.doesNotMatch(body, /Recent history/);
+});
+
+test("formatCorrelationLine: renders scope plus failed/passed browsers", () => {
+  const line = formatCorrelationLine({
+    failureScope: "multi-browser",
+    failedBrowsers: ["chrome", "edge"],
+    passedBrowsers: [],
+  });
+  assert.match(line, /multi-browser/);
+  assert.match(line, /failed: chrome, edge/);
+});
+
+test("formatCorrelationLine: includes passed browsers when present", () => {
+  const line = formatCorrelationLine({
+    failureScope: "single-browser",
+    failedBrowsers: ["chrome"],
+    passedBrowsers: ["edge"],
+  });
+  assert.match(line, /passed: edge/);
+});
+
+test("formatCorrelationLine: returns null when correlation is absent or malformed", () => {
+  assert.equal(formatCorrelationLine(null), null);
+  assert.equal(formatCorrelationLine(undefined), null);
+  assert.equal(formatCorrelationLine({}), null);
+});
+
+test("formatComment: includes a Browser scope line when sourceContext.browserCorrelation is present", () => {
+  const body = formatComment({
+    browser: "chrome",
+    report: {
+      results: [baseResult()],
+      sourceContext: {
+        browserCorrelation: { failureScope: "multi-browser", failedBrowsers: ["chrome", "edge"], passedBrowsers: [] },
+      },
+    },
+  });
+  assert.match(body, /\*\*Browser scope:\*\*/);
+  assert.match(body, /multi-browser — failed: chrome, edge\./);
+});
+
+test("formatComment: omits the Browser scope line entirely when browserCorrelation is absent", () => {
+  const body = formatComment({ browser: "chrome", report: { results: [baseResult()] } });
+  assert.doesNotMatch(body, /Browser scope/);
 });
