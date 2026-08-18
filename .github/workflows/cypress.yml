@@ -245,6 +245,64 @@ jobs:
           echo "Cypress E2E tests failed for browser '${{ matrix.browser }}'. See the report/screenshot/video artifacts (and QA AI triage, if it runs) for details."
           exit 1
 
+  # Roadmap #14B spike (read-only infrastructure question, not production
+  # browser-matrix integration): does the existing Cypress suite actually
+  # execute in Firefox on GitHub Actions host infrastructure, if run
+  # WITHOUT the nested cypress/included Docker container that chrome/edge
+  # use above? The workflow has historically excluded Firefox from that
+  # container because it reliably hung during WebDriver session creation
+  # there (see cypress-tests' matrix comment) - this job tests the specific
+  # hypothesis that running directly on the bare ubuntu-latest runner (no
+  # nested container) avoids that hang, using an explicit Firefox install
+  # via browser-actions/setup-firefox rather than gambling on whatever
+  # Firefox build happens to be preinstalled on the runner image.
+  #
+  # Deliberately NOT wired into `needs:`/`if:` anywhere else in this
+  # workflow, does not upload qa-triage-input-firefox, and is not part of
+  # branch protection - this is investigation only. No continue-on-error
+  # around the actual Cypress run: a genuine Firefox failure must fail this
+  # job visibly, exactly like chrome/edge do above.
+  firefox-spike:
+    name: Firefox CI spike (Roadmap #14B)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Explicit, versioned Firefox install on the bare runner (no nested
+      # Docker) - the one deliberate variable this spike changes relative
+      # to the historical hang.
+      - name: Set up Firefox
+        uses: browser-actions/setup-firefox@v1
+        with:
+          firefox-version: latest
+
+      - name: Record environment versions
+        run: |
+          echo "Node: $(node --version)"
+          echo "npm: $(npm --version)"
+          echo "Firefox: $(firefox --version)"
+          npx cypress version
+
+      # Same existing npm script chrome/edge would use if they had one
+      # (see package.json's "firefox" script) - unmodified, no new spec
+      # filtering, no browser-conditional test changes. No
+      # continue-on-error: a real Cypress/Firefox failure must fail this
+      # job, not be swallowed.
+      - name: Run Cypress E2E tests (firefox)
+        run: npm run firefox
+
   # Runs downstream of the full Cypress matrix, at most once per workflow
   # run - the whole point of this job existing (see PR #23) is that a
   # failure appearing in both chrome and edge must trigger exactly one
