@@ -352,6 +352,25 @@ Qualitative ordering, reused unchanged from the correlation-quality comparator a
 
 The existing "any regression anywhere wins" precedence is unchanged and now spans ten dimensions per sample: classification, `shouldRetry`, `shouldCreateBug`, `fabricatedEvidence`, `rootCause`, `evidence`, `recommendedFix`, `correlationConstruction`, `correlationTransport`, `correlationReasoning`. A single regression on any one of them, for any one sample, still outweighs any number of simultaneous improvements elsewhere - proven with mandatory per-sample masking tests (aggregate `pass`/`partial`/`fail` counts staying identical while one sample regresses and another improves) in addition to the standard transition-table and mixed-regression tests. Experiment #41's frozen `rootCause = fail` / `evidence = fail` deficiencies (and `experiment-2-broken-selector`'s frozen `recommendedFix = fail` deficiency in every dataset version) now show up explicitly as known deficiencies rather than an untracked gap, and remain `UNCHANGED` - not a new regression - for as long as they stay frozen.
 
+### Additive Post-Prompt Evaluation Dataset v4 (Roadmap #13)
+
+**Status: IMPLEMENTED / READY FOR REVIEW.** Evaluation-infrastructure-only change - no production prompt, provider, application policy, Cypress, or GitHub Actions workflow modified, and no live Groq calls made. Dataset v1/v2/v3 and Baseline v1/v2/v3 remain byte-for-byte frozen; Dataset v4/Baseline v4 are a new, separate, additive pair of files.
+
+Dataset v4 = all 7 Dataset v3 samples (migrated byte-for-byte, proven by a dedicated migration-integrity test) + two new samples recording two independent, real controlled re-validations of Experiment #41's exact scenario against the merged Roadmap #11 grounding prompt:
+
+- `experiment-45-post-prompt-grounding-revalidation` - the first post-prompt observation (PR #45, closed without merge). The live provider's first response was malformed JSON; a retry on the same commit succeeded.
+- `experiment-47-post-prompt-grounding-revalidation` - the second, fully independent post-prompt observation (PR #47, closed without merge, on a separate branch from the first). The provider succeeded on its first attempt - no retry. This run also independently exercised the application-level `shouldCreateBug` safeguard: the raw model recommendation was `true`, and policy correctly forced the final result to `false`.
+
+Both new samples are stored as **separate, distinct** dataset entries - never averaged or collapsed into one synthetic "combined" result - so the evaluation history reflects the actual chronology: Experiment #41 remains the pre-prompt historical deficiency (`fabricatedEvidence = true`, `rootCause = fail`, `evidence = fail`, `recommendedFix = partial`, `correlationReasoning = fail`, completely unmodified), and each post-prompt observation is its own frozen record.
+
+Both post-prompt observations independently showed `fabricatedEvidence = false`, with `classification = TEST_BUG`, `shouldRetry = false`, and final `shouldCreateBug = false` preserved, and `rootCause`/`evidence`/`recommendedFix`/`correlationReasoning` all curated `pass` after independent re-verification against the real CI artifacts (not merely re-stated from a prior report). **This is repeatability evidence for one fixed controlled scenario, not proof that the grounding improvement generalizes to arbitrary failures** - two consistent observations of the same defect is meaningfully more than one, but still far short of a claim about general model behavior.
+
+Provenance that differs meaningfully between the two runs is preserved, not discarded or averaged away: `metadata.providerAttempts` (2 vs 1), `metadata.firstAttemptError` (the exact malformed-JSON error text vs `null`), and `actual.originalShouldCreateBug`/`actual.policyAdjusted` (the raw-vs-final `shouldCreateBug` divergence that only the second run exhibited). These are historical/diagnostic facts about *how* an observation was produced, not quality judgments - they validate against `dataset-v4-schema.js` but are never read by `scoring-v4.js` or folded into any aggregate, and `regression-v4.js` never compares or tallies them, proven by dedicated tests showing that changing `providerAttempts` or `policyAdjusted` alone never flips the regression verdict.
+
+Baseline v4 extends Baseline v3 additively with both new samples frozen at their independently-verified state (`classificationStatus: pass`, `shouldRetryCorrect: true`, `shouldCreateBugCorrect: true`, `fabricatedEvidence: false`, `rootCause`/`evidence`/`recommendedFix`/`correlationConstruction`/`correlationTransport`/`correlationReasoning`: all `pass`). `regression-v4.js` protects the same ten dimensions per sample as `regression-v3.js` (Roadmap #12), with the same "any regression anywhere wins" precedence, proven again with per-sample masking tests scoped to the two new samples.
+
+`npm run eval:ai:v4` / `npm run eval:regression:v4` are available locally and are **fully offline** - Dataset v4 is **not** added to GitHub Actions in this phase; `QA Agent evaluation` continues to run only the v1/v2/v3 commands it already ran before this change.
+
 ### Roadmap
 
 **Done:**
@@ -372,15 +391,27 @@ The existing "any regression anywhere wins" precedence is unchanged and now span
 - Evidence Grounding Dataset Expansion (Roadmap #10) - see [above](#evidence-grounding-dataset-expansion-roadmap-10); additive Dataset v3/Baseline v3 (Dataset v2's six samples + the grounding sample), `fabricatedEvidence = true` frozen as a known deficiency, not in CI yet
 - Evidence Grounding Prompt Improvement, Phase 1 (Roadmap #11) - see [above](#evidence-grounding-prompt-improvement-roadmap-11); status: **implemented / ready for live validation** - a minimal, generic claim-level grounding contract (observed fact / supported inference / unknown-not-established), not yet behaviorally validated against a live model
 - Qualitative Regression Protection (Roadmap #12) - see [above](#qualitative-regression-protection-roadmap-12); `rootCause`/`evidence`/`recommendedFix` are now per-sample regression-protected in Baseline v1/v2/v3, using the same `fail < partial < pass` ordering as correlation quality, evaluation-only, no production behavior change
+- Additive Post-Prompt Evaluation Dataset v4 (Roadmap #13) - see [above](#additive-post-prompt-evaluation-dataset-v4-roadmap-13); status: **implemented / ready for review** - two independent post-prompt controlled re-validations of Experiment #41 stored as separate samples alongside the unmodified pre-prompt historical record, `eval:ai:v4`/`eval:regression:v4` available locally, not yet in CI
 
 **Next:**
 
-- Controlled Correlation Re-validation (Roadmap #8, Phases 2-3) - reproduce a same-signature and a different-signature multi-browser failure against the improved prompt with real Groq calls, compare against the historical Baseline v2 findings, and only then update Dataset v2/Baseline v2 with real evidence (target: move `correlationReasoning` from `partial` to `pass` on Scenario A/B without regressing classification/action safety anywhere else)
-- Repeat Controlled Evidence Grounding Re-validation (Roadmap #11, Phase 2) - obtain a second independent live observation now that qualitative regression protection (Roadmap #12) exists, so a `fabricatedEvidence` improvement can no longer silently hide a `rootCause`/`evidence`/`recommendedFix` regression. If a second valid observation again shows `fabricatedEvidence: true -> false` with classification/`shouldRetry`/final `shouldCreateBug` preserved and no protected qualitative regression, separately consider freezing an additive post-prompt evaluation sample/dataset version - without overwriting the historical Experiment #41 record
+- Browser Matrix Expansion - Firefox (Roadmap #14)
+
+**Then:**
+
+- QA Knowledge / Skills Layer (Roadmap #15)
+
+**Then:**
+
+- Deterministic Knowledge Selection (Roadmap #16)
+
+**Then:**
+
+- External Knowledge Integration (Roadmap #17)
 
 **Planned / future work** (not implemented yet):
 
-- Broader browser coverage (Firefox/WebKit) once the current CI sandboxing limitation is resolved
+- Controlled Correlation Re-validation (Roadmap #8, Phases 2-3) - reproduce a same-signature and a different-signature multi-browser failure against the improved prompt with real Groq calls, compare against the historical Baseline v2 findings, and only then update Dataset v2/Baseline v2 with real evidence (target: move `correlationReasoning` from `partial` to `pass` on Scenario A/B without regressing classification/action safety anywhere else) - still outstanding, not superseded by Roadmap #13
 - Cross-run failure fingerprinting (this PR's correlation is scoped to a single workflow run only)
 - Portability / reusable QA Agent architecture - extracting the QA Agent into a package/workflow other test-automation repositories (not just Targomo) can adopt
 - Playwright adapter/integration

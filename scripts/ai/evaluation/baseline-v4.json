@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "datasetVersion": 4,
+  "samples": {
+    "experiment-2-broken-selector": {
+      "classificationStatus": "fail",
+      "shouldRetryCorrect": false,
+      "shouldCreateBugCorrect": true,
+      "fabricatedEvidence": false,
+      "rootCause": "partial",
+      "evidence": "partial",
+      "recommendedFix": "fail",
+      "correlationConstruction": "not_applicable",
+      "correlationTransport": "not_applicable",
+      "correlationReasoning": "not_applicable"
+    },
+    "experiment-3-application-like-mismatch": {
+      "classificationStatus": "pass",
+      "shouldRetryCorrect": true,
+      "shouldCreateBugCorrect": true,
+      "fabricatedEvidence": false,
+      "rootCause": "pass",
+      "evidence": "pass",
+      "recommendedFix": "pass",
+      "correlationConstruction": "not_applicable",
+      "correlationTransport": "not_applicable",
+      "correlationReasoning": "not_applicable"
+    },
+    "experiment-4-deterministic-test-bug-history": {
+      "classificationStatus": "pass",
+      "shouldRetryCorrect": true,
+      "shouldCreateBugCorrect": true,
+      "fabricatedEvidence": false,
+      "rootCause": "pass",
+      "evidence": "pass",
+      "recommendedFix": "pass",
+      "correlationConstruction": "not_applicable",
+      "correlationTransport": "not_applicable",
+      "correlationReasoning": "not_applicable"
+    },
+    "experiment-5-real-flaky-test": {
+      "classificationStatus": "ambiguous",
+      "shouldRetryCorrect": true,
+      "shouldCreateBugCorrect": true,
+      "fabricatedEvidence": false,
+      "rootCause": "partial",
+      "evidence": "partial",
+      "recommendedFix": "pass",
+      "correlationConstruction": "not_applicable",
+      "correlationTransport": "not_applicable",
+      "correlationReasoning": "not_applicable"
+    },
+    "experiment-A-multi-browser-same-signature": {
+      "classificationStatus": "pass",
+      "shouldRetryCorrect": true,
+      "shouldCreateBugCorrect": true,
+      "fabricatedEvidence": false,
+      "rootCause": "pass",
+      "evidence": "pass",
+      "recommendedFix": "pass",
+      "correlationConstruction": "pass",
+      "correlationTransport": "pass",
+      "correlationReasoning": "partial"
+    },
+    "experiment-B-multi-browser-different-signatures": {
+      "classificationStatus": "pass",
+      "shouldRetryCorrect": true,
+      "shouldCreateBugCorrect": true,
+      "fabricatedEvidence": false,
+      "rootCause": "pass",
+      "evidence": "pass",
+      "recommendedFix": "pass",
+      "correlationConstruction": "pass",
+      "correlationTransport": "pass",
+      "correlationReasoning": "partial"
+    },
+    "experiment-41-correlation-necessary-grounding": {
+      "classificationStatus": "pass",
+      "shouldRetryCorrect": true,
+      "shouldCreateBugCorrect": true,
+      "fabricatedEvidence": true,
+      "rootCause": "fail",
+      "evidence": "fail",
+      "recommendedFix": "partial",
+      "correlationConstruction": "pass",
+      "correlationTransport": "pass",
+      "correlationReasoning": "fail"
+    },
+    "experiment-45-post-prompt-grounding-revalidation": {
+      "classificationStatus": "pass",
+      "shouldRetryCorrect": true,
+      "shouldCreateBugCorrect": true,
+      "fabricatedEvidence": false,
+      "rootCause": "pass",
+      "evidence": "pass",
+      "recommendedFix": "pass",
+      "correlationConstruction": "pass",
+      "correlationTransport": "pass",
+      "correlationReasoning": "pass"
+    },
+    "experiment-47-post-prompt-grounding-revalidation": {
+      "classificationStatus": "pass",
+      "shouldRetryCorrect": true,
+      "shouldCreateBugCorrect": true,
+      "fabricatedEvidence": false,
+      "rootCause": "pass",
+      "evidence": "pass",
+      "recommendedFix": "pass",
+      "correlationConstruction": "pass",
+      "correlationTransport": "pass",
+      "correlationReasoning": "pass"
+    }
+  }
+}
