@@ -7,6 +7,9 @@
       "shouldRetryCorrect": false,
       "shouldCreateBugCorrect": true,
       "fabricatedEvidence": false,
+      "rootCause": "partial",
+      "evidence": "partial",
+      "recommendedFix": "fail",
       "correlationConstruction": "not_applicable",
       "correlationTransport": "not_applicable",
       "correlationReasoning": "not_applicable"
@@ -16,6 +19,9 @@
       "shouldRetryCorrect": true,
       "shouldCreateBugCorrect": true,
       "fabricatedEvidence": false,
+      "rootCause": "pass",
+      "evidence": "pass",
+      "recommendedFix": "pass",
       "correlationConstruction": "not_applicable",
       "correlationTransport": "not_applicable",
       "correlationReasoning": "not_applicable"
@@ -25,6 +31,9 @@
       "shouldRetryCorrect": true,
       "shouldCreateBugCorrect": true,
       "fabricatedEvidence": false,
+      "rootCause": "pass",
+      "evidence": "pass",
+      "recommendedFix": "pass",
       "correlationConstruction": "not_applicable",
       "correlationTransport": "not_applicable",
       "correlationReasoning": "not_applicable"
@@ -34,6 +43,9 @@
       "shouldRetryCorrect": true,
       "shouldCreateBugCorrect": true,
       "fabricatedEvidence": false,
+      "rootCause": "partial",
+      "evidence": "partial",
+      "recommendedFix": "pass",
       "correlationConstruction": "not_applicable",
       "correlationTransport": "not_applicable",
       "correlationReasoning": "not_applicable"
@@ -43,6 +55,9 @@
       "shouldRetryCorrect": true,
       "shouldCreateBugCorrect": true,
       "fabricatedEvidence": false,
+      "rootCause": "pass",
+      "evidence": "pass",
+      "recommendedFix": "pass",
       "correlationConstruction": "pass",
       "correlationTransport": "pass",
       "correlationReasoning": "partial"
@@ -52,6 +67,9 @@
       "shouldRetryCorrect": true,
       "shouldCreateBugCorrect": true,
       "fabricatedEvidence": false,
+      "rootCause": "pass",
+      "evidence": "pass",
+      "recommendedFix": "pass",
       "correlationConstruction": "pass",
       "correlationTransport": "pass",
       "correlationReasoning": "partial"
@@ -61,6 +79,9 @@
       "shouldRetryCorrect": true,
       "shouldCreateBugCorrect": true,
       "fabricatedEvidence": true,
+      "rootCause": "fail",
+      "evidence": "fail",
+      "recommendedFix": "partial",
       "correlationConstruction": "pass",
       "correlationTransport": "pass",
       "correlationReasoning": "fail"

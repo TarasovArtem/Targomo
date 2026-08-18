@@ -18,7 +18,15 @@ function makeValidBaseline(overrides) {
     version: 1,
     datasetVersion: 1,
     samples: {
-      "sample-1": { classificationStatus: "pass", shouldRetryCorrect: true, shouldCreateBugCorrect: true, fabricatedEvidence: false },
+      "sample-1": {
+        classificationStatus: "pass",
+        shouldRetryCorrect: true,
+        shouldCreateBugCorrect: true,
+        fabricatedEvidence: false,
+        rootCause: "pass",
+        evidence: "pass",
+        recommendedFix: "pass",
+      },
     },
   };
   return { ...base, ...overrides };
@@ -110,6 +118,36 @@ test("an invalid fabricatedEvidence boolean fails validation", () => {
   );
   assert.equal(result.valid, false);
   assert.ok(result.errors.some((e) => e.includes("fabricatedEvidence")));
+});
+
+test("an invalid rootCause state fails validation", () => {
+  const result = validateBaseline(
+    makeValidBaseline({
+      samples: { "sample-1": { ...makeValidBaseline().samples["sample-1"], rootCause: "kinda" } },
+    })
+  );
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("rootCause")));
+});
+
+test("an invalid evidence state fails validation", () => {
+  const result = validateBaseline(
+    makeValidBaseline({
+      samples: { "sample-1": { ...makeValidBaseline().samples["sample-1"], evidence: "kinda" } },
+    })
+  );
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("evidence")));
+});
+
+test("an invalid recommendedFix state fails validation", () => {
+  const result = validateBaseline(
+    makeValidBaseline({
+      samples: { "sample-1": { ...makeValidBaseline().samples["sample-1"], recommendedFix: "kinda" } },
+    })
+  );
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("recommendedFix")));
 });
 
 test("missing samples object fails validation", () => {

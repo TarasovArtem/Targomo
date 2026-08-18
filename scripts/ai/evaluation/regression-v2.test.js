@@ -32,9 +32,9 @@ function makeCurrentSample(id, overrides = {}) {
     policyAdjusted: false,
     quality: {
       classification: "pass",
-      rootCause: "pass",
-      evidence: "pass",
-      recommendedFix: "pass",
+      rootCause: overrides.rootCause || "pass",
+      evidence: overrides.evidence || "pass",
+      recommendedFix: overrides.recommendedFix || "pass",
       historyUsage: "neutral",
       fabricatedEvidence: overrides.fabricatedEvidence ?? false,
       correlationConstruction: overrides.correlationConstruction || "not_applicable",
@@ -51,6 +51,9 @@ function makeBaselineSample(overrides = {}) {
     shouldRetryCorrect: overrides.shouldRetryCorrect ?? true,
     shouldCreateBugCorrect: overrides.shouldCreateBugCorrect ?? true,
     fabricatedEvidence: overrides.fabricatedEvidence ?? false,
+    rootCause: overrides.rootCause || "pass",
+    evidence: overrides.evidence || "pass",
+    recommendedFix: overrides.recommendedFix || "pass",
     correlationConstruction: overrides.correlationConstruction || "not_applicable",
     correlationTransport: overrides.correlationTransport || "not_applicable",
     correlationReasoning: overrides.correlationReasoning || "not_applicable",
@@ -373,4 +376,105 @@ test("formatRegressionReportV2: shows the correlation baseline for applicable sa
   assert.match(output, /Correlation baseline:/);
   assert.match(output, /experiment-A-multi-browser-same-signature: construction=pass, transport=pass, reasoning=partial/);
   assert.match(output, /experiment-B-multi-browser-different-signatures: construction=pass, transport=pass, reasoning=partial/);
+});
+
+// ============================================================
+// Roadmap #12 — Qualitative Regression Protection
+// ============================================================
+
+const QUALITATIVE_DIMENSIONS = ["rootCause", "evidence", "recommendedFix"];
+const TRANSITIONS = [
+  { from: "fail", to: "partial", expected: "improvement" },
+  { from: "fail", to: "pass", expected: "improvement" },
+  { from: "partial", to: "pass", expected: "improvement" },
+  { from: "pass", to: "partial", expected: "regression" },
+  { from: "pass", to: "fail", expected: "regression" },
+  { from: "partial", to: "fail", expected: "regression" },
+  { from: "fail", to: "fail", expected: "unchanged" },
+  { from: "partial", to: "partial", expected: "unchanged" },
+  { from: "pass", to: "pass", expected: "unchanged" },
+];
+
+for (const dimension of QUALITATIVE_DIMENSIONS) {
+  for (const { from, to, expected } of TRANSITIONS) {
+    test(`${dimension}: ${from} -> ${to} yields ${expected}`, () => {
+      const baseline = makeSyntheticBaseline({ "exp-A": makeBaselineSample({ correlationConstruction: "pass", correlationTransport: "pass", correlationReasoning: "partial", [dimension]: from }) });
+      const current = makeSyntheticCurrentEvaluation({
+        "exp-A": makeCurrentSample("exp-A", { correlationConstruction: "pass", correlationTransport: "pass", correlationReasoning: "partial", [dimension]: to }),
+      });
+      const comparison = compareEvaluationToBaselineV2(current, baseline);
+      const sample = comparison.samples.find((s) => s.id === "exp-A");
+      assert.equal(sample[dimension].change, expected);
+
+      const expectedStatus = expected === "regression" ? "REGRESSED" : expected === "improvement" ? "IMPROVED" : "UNCHANGED";
+      assert.equal(comparison.status, expectedStatus);
+    });
+  }
+}
+
+test("mixed: fabricatedEvidence improves while recommendedFix regresses on the same sample - REGRESSED", () => {
+  const baseline = makeSyntheticBaseline({ "exp-3": makeBaselineSample({ fabricatedEvidence: true, recommendedFix: "pass" }) });
+  const current = makeSyntheticCurrentEvaluation({
+    "exp-3": makeCurrentSample("exp-3", { fabricatedEvidence: false, recommendedFix: "fail" }),
+  });
+  const comparison = compareEvaluationToBaselineV2(current, baseline);
+  assert.equal(comparison.status, "REGRESSED");
+  const exp3 = comparison.samples.find((s) => s.id === "exp-3");
+  assert.equal(exp3.fabricatedEvidence.change, "improvement");
+  assert.equal(exp3.recommendedFix.change, "regression");
+});
+
+test("mixed: rootCause improves while classification regresses on the same sample - REGRESSED", () => {
+  const baseline = makeSyntheticBaseline({ "exp-3": makeBaselineSample({ rootCause: "fail" }) });
+  const current = makeSyntheticCurrentEvaluation({
+    "exp-3": makeCurrentSample("exp-3", { rootCause: "pass", classificationStatus: "incorrect" }),
+  });
+  const comparison = compareEvaluationToBaselineV2(current, baseline);
+  assert.equal(comparison.status, "REGRESSED");
+  const exp3 = comparison.samples.find((s) => s.id === "exp-3");
+  assert.equal(exp3.rootCause.change, "improvement");
+  assert.equal(exp3.classification.change, "regression");
+});
+
+test("mixed: evidence improves while shouldCreateBug regresses on the same sample - REGRESSED", () => {
+  const baseline = makeSyntheticBaseline({ "exp-3": makeBaselineSample({ evidence: "fail" }) });
+  const current = makeSyntheticCurrentEvaluation({
+    "exp-3": makeCurrentSample("exp-3", { evidence: "pass", shouldCreateBugCorrect: false }),
+  });
+  const comparison = compareEvaluationToBaselineV2(current, baseline);
+  assert.equal(comparison.status, "REGRESSED");
+  const exp3 = comparison.samples.find((s) => s.id === "exp-3");
+  assert.equal(exp3.evidence.change, "improvement");
+  assert.equal(exp3.shouldCreateBug.change, "regression");
+});
+
+// Aggregate masking: exp-3's rootCause regresses pass -> fail while exp-4's
+// improves fail -> pass at the same time - the raw counts are identical
+// either way, but per-sample comparison must still catch exp-3's regression.
+test("aggregate masking: rootCause regresses on one sample while it improves on another - still REGRESSED", () => {
+  const baseline = makeSyntheticBaseline({
+    "exp-3": makeBaselineSample({ rootCause: "pass" }),
+    "exp-4": makeBaselineSample({ rootCause: "fail" }),
+  });
+  const current = makeSyntheticCurrentEvaluation({
+    "exp-3": makeCurrentSample("exp-3", { rootCause: "fail" }),
+    "exp-4": makeCurrentSample("exp-4", { rootCause: "pass" }),
+  });
+  const comparison = compareEvaluationToBaselineV2(current, baseline);
+  assert.equal(comparison.status, "REGRESSED");
+  assert.equal(comparison.samples.find((s) => s.id === "exp-3").rootCause.change, "regression");
+  assert.equal(comparison.samples.find((s) => s.id === "exp-4").rootCause.change, "improvement");
+  assert.equal(comparison.summary.improvements, 1);
+  assert.equal(comparison.summary.regressions, 1);
+});
+
+// Known deficiency: real Dataset v2/Baseline v2's experiment-2 recommendedFix
+// is frozen at "fail" - must remain unchanged, never a fresh regression.
+test("known Experiment #2 recommendedFix deficiency (fail -> fail) is unchanged, not a new regression", () => {
+  const currentEvaluation = evaluateDatasetV2(loadRealDatasetV2());
+  const comparison = compareEvaluationToBaselineV2(currentEvaluation, loadRealBaselineV2());
+  const exp2 = comparison.samples.find((s) => s.id === "experiment-2-broken-selector");
+  assert.equal(exp2.recommendedFix.change, "unchanged");
+  assert.equal(exp2.recommendedFix.baseline, "fail");
+  assert.equal(comparison.status, "UNCHANGED");
 });

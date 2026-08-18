@@ -23,6 +23,9 @@ function makeValidBaseline(overrides = {}) {
         shouldRetryCorrect: true,
         shouldCreateBugCorrect: true,
         fabricatedEvidence: false,
+        rootCause: "pass",
+        evidence: "pass",
+        recommendedFix: "pass",
         correlationConstruction: "not_applicable",
         correlationTransport: "not_applicable",
         correlationReasoning: "not_applicable",
@@ -94,6 +97,33 @@ test("an invalid correlation quality state fails validation", () => {
   const result = validateBaselineV2(baseline);
   assert.equal(result.valid, false);
   assert.ok(result.errors.some((e) => e.includes("correlationReasoning")));
+});
+
+test("an invalid rootCause state fails validation", () => {
+  const baseline = makeValidBaseline({
+    samples: { "sample-1": { ...makeValidBaseline().samples["sample-1"], rootCause: "kinda" } },
+  });
+  const result = validateBaselineV2(baseline);
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("rootCause")));
+});
+
+test("an invalid evidence state fails validation", () => {
+  const baseline = makeValidBaseline({
+    samples: { "sample-1": { ...makeValidBaseline().samples["sample-1"], evidence: "kinda" } },
+  });
+  const result = validateBaselineV2(baseline);
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("evidence")));
+});
+
+test("an invalid recommendedFix state fails validation", () => {
+  const baseline = makeValidBaseline({
+    samples: { "sample-1": { ...makeValidBaseline().samples["sample-1"], recommendedFix: "kinda" } },
+  });
+  const result = validateBaselineV2(baseline);
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("recommendedFix")));
 });
 
 test("a missing fabricatedEvidence fails validation", () => {
