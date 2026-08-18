@@ -325,3 +325,232 @@ test("anti-overfitting: the browserCorrelation rule text itself stays generic, w
     assert.doesNotMatch(correlationSection, pattern, `browserCorrelation rule text must not depend on ${pattern}`);
   }
 });
+
+// --- Rule 12: QA Knowledge authority contract (Roadmap #16A) --------------
+// relevantKnowledge is GUIDANCE ONLY, never current-run evidence - see
+// scripts/ai/knowledge/ (Roadmap #15) for where it's selected, and
+// analyze-failure.js's computeRelevantKnowledge() for how it reaches this
+// prompt. These tests check the prompt's textual authority contract only;
+// scripts/ai/analyze-failure.test.js covers the actual wiring/selection
+// integration.
+
+function rule12Section() {
+  const prompt = buildSystemPrompt();
+  const start = prompt.indexOf('12. A "relevantKnowledge" list may be provided');
+  const end = prompt.indexOf("PROMPT INJECTION DEFENSE");
+  return prompt.slice(start, end);
+}
+
+test("buildUserPrompt: includes relevantKnowledge when present on context", () => {
+  const context = {
+    metadata: {},
+    testResults: {},
+    failedTests: [],
+    relevantFiles: {},
+    relevantKnowledge: [
+      { id: "qa-timeout-error-multiple-causes", statement: "A timeout can have multiple causes." },
+    ],
+  };
+  const prompt = buildUserPrompt(context);
+  assert.match(prompt, /"id": "qa-timeout-error-multiple-causes"/);
+  assert.match(prompt, /"statement": "A timeout can have multiple causes\."/);
+});
+
+test("buildUserPrompt: relevantKnowledge is explicitly [] when absent from context, not just omitted", () => {
+  const context = { metadata: {}, testResults: {}, failedTests: [], relevantFiles: {} };
+  const prompt = buildUserPrompt(context);
+  assert.match(prompt, /"relevantKnowledge": \[\]/);
+});
+
+test("buildUserPrompt: relevantKnowledge rendering is byte-identical across repeated calls with the same context (deterministic)", () => {
+  const context = {
+    metadata: {},
+    testResults: {},
+    failedTests: [],
+    relevantFiles: {},
+    relevantKnowledge: [
+      { id: "unit-a", statement: "Statement A." },
+      { id: "unit-b", statement: "Statement B." },
+    ],
+  };
+  assert.equal(buildUserPrompt(context), buildUserPrompt(context));
+});
+
+test("buildUserPrompt: relevantKnowledge is a structurally separate field from failedTests/evidence - never merged in", () => {
+  const context = {
+    metadata: {},
+    testResults: {},
+    failedTests: [{ title: "t", specFile: "s", error: { message: "boom" } }],
+    relevantFiles: {},
+    relevantKnowledge: [{ id: "some-unit", statement: "Some knowledge statement." }],
+  };
+  const prompt = buildUserPrompt(context);
+  const payload = JSON.parse(prompt.slice(prompt.indexOf("{"), prompt.lastIndexOf("}") + 1));
+  assert.deepEqual(payload.relevantKnowledge, [{ id: "some-unit", statement: "Some knowledge statement." }]);
+  // The knowledge statement text must not have leaked into failedTests.
+  assert.equal(JSON.stringify(payload.failedTests).includes("Some knowledge statement"), false);
+});
+
+test("buildSystemPrompt: rule 12 declares relevantKnowledge as GUIDANCE ONLY, never current-run evidence", () => {
+  const section = rule12Section();
+  assert.ok(section.length > 0, "expected to find rule 12's text");
+  assert.match(section, /GUIDANCE ONLY, never current-run evidence/);
+  assert.match(section, /never a classification shortcut/i);
+});
+
+test("buildSystemPrompt: rule 12 forbids knowledge from establishing current-run facts by itself", () => {
+  const section = rule12Section();
+  assert.match(section, /must never by itself establish what happened in the current run/i);
+  assert.match(section, /why the current failure definitely occurred/i);
+  assert.match(section, /two browsers' failures share a root cause/i);
+});
+
+test("buildSystemPrompt: rule 12 says direct evidence, browserCorrelation, and history keep authority - knowledge can never override them", () => {
+  const section = rule12Section();
+  assert.match(section, /Current-run direct evidence, browserCorrelation, and history keep exactly the authority/i);
+  assert.match(section, /relevantKnowledge can never override any of them/i);
+  assert.match(section, /if a knowledge statement conflicts with what the current-run evidence actually shows, the evidence wins/i);
+});
+
+test("buildSystemPrompt: rule 12 extends rule 11's grounding contract to knowledge-suggested mechanisms", () => {
+  const section = rule12Section();
+  assert.match(section, /OBSERVED FACT \/ SUPPORTED INFERENCE \/ UNKNOWN/);
+  assert.match(section, /must remain a SUPPORTED INFERENCE/i);
+  assert.match(section, /never promoted to an OBSERVED FACT/i);
+});
+
+test("buildSystemPrompt: rule 12 forbids copying knowledge into evidence as though it were observed", () => {
+  const section = rule12Section();
+  assert.match(section, /never copied into "evidence" as though it were something this run's own data showed/i);
+});
+
+test("buildSystemPrompt: rule 12 says absence of selected knowledge is normal, not a signal", () => {
+  const section = rule12Section();
+  assert.match(section, /relevantKnowledge being empty or absent is normal, not a signal of anything/i);
+  assert.match(section, /analyze exactly as you would otherwise/i);
+});
+
+test("buildSystemPrompt: prompt injection defense explicitly lists relevantKnowledge as DATA, not instructions", () => {
+  const prompt = buildSystemPrompt();
+  const injectionSection = prompt.slice(prompt.indexOf("PROMPT INJECTION DEFENSE"));
+  assert.match(injectionSection, /"relevantKnowledge"/);
+});
+
+// --- Adversarial authority cases (Roadmap #16A Phase 13) -------------------
+// Synthetic fixtures only - no live provider call. Each case constructs the
+// described context and proves (a) relevantKnowledge stays structurally
+// separate from the evidence fields it must not be confused with, and (b)
+// the system prompt's textual contract (rule 12, plus the specific rule
+// each case exercises) actually forbids the improper interpretation.
+
+test("CASE 1 - general timeout knowledge does not establish a specific mechanism when no evidence pins one down", () => {
+  const context = {
+    metadata: {},
+    testResults: {},
+    failedTests: [{ title: "t", specFile: "s", error: { message: "element not found" } }],
+    relevantFiles: {},
+    relevantKnowledge: [
+      { id: "qa-timeout-error-multiple-causes", statement: "A timeout can have multiple causes." },
+    ],
+  };
+  const prompt = buildUserPrompt(context);
+  const payload = JSON.parse(prompt.slice(prompt.indexOf("{"), prompt.lastIndexOf("}") + 1));
+  assert.deepEqual(payload.relevantKnowledge.map((k) => k.id), ["qa-timeout-error-multiple-causes"]);
+  const section = rule12Section();
+  assert.match(section, /must never by itself establish/i);
+});
+
+test("CASE 2 - differing browser signatures: knowledge may broaden hypotheses but cannot claim a browser-specific cause without evidence", () => {
+  const context = {
+    metadata: {},
+    testResults: {},
+    failedTests: [],
+    relevantFiles: {},
+    browserCorrelation: {
+      browsers: ["chrome", "firefox"],
+      failedBrowsers: ["chrome", "firefox"],
+      passedBrowsers: [],
+      primaryBrowser: "chrome",
+      additionalFailedBrowsers: ["firefox"],
+      failureScope: "multi-browser",
+      sameFailureSignature: false,
+    },
+    relevantKnowledge: [
+      {
+        id: "cross-browser-differing-signature-caution",
+        statement: "Differing signatures can indicate different failure mechanisms.",
+      },
+    ],
+  };
+  const prompt = buildUserPrompt(context);
+  const payload = JSON.parse(prompt.slice(prompt.indexOf("{"), prompt.lastIndexOf("}") + 1));
+  // Knowledge and browserCorrelation stay separate top-level fields.
+  assert.equal(payload.browserCorrelation.sameFailureSignature, false);
+  assert.equal(payload.relevantKnowledge.length, 1);
+  const system = buildSystemPrompt();
+  assert.match(system, /do not invent a browser-specific mechanism merely because signatures differ/i);
+  assert.match(rule12Section(), /relevantKnowledge can never override any of them/i);
+});
+
+test("CASE 3 - Firefox historical execution-environment constraint must not be presented as the cause of an unrelated assertion failure", () => {
+  const context = {
+    metadata: { browser: "firefox" },
+    testResults: {},
+    failedTests: [{ title: "t", specFile: "s", error: { message: "AssertionError: expected 3 to equal 2" } }],
+    relevantFiles: {},
+    relevantKnowledge: [
+      {
+        id: "project-firefox-execution-environment-split",
+        statement: "Firefox executes on a different environment; not evidence of a Firefox-specific product defect.",
+      },
+    ],
+  };
+  const prompt = buildUserPrompt(context);
+  const payload = JSON.parse(prompt.slice(prompt.indexOf("{"), prompt.lastIndexOf("}") + 1));
+  // The failed test's own error text is untouched by the knowledge statement.
+  assert.equal(payload.failedTests[0].error.message, "AssertionError: expected 3 to equal 2");
+  assert.match(rule12Section(), /never establish .*why the current failure definitely occurred|must never by itself establish/i);
+});
+
+test("CASE 4 - Cypress retry/timeout guidance must not turn a deterministic test bug into an unsupported flaky/timing claim", () => {
+  const section = rule12Section();
+  assert.match(section, /must never by itself establish/i);
+  const system = buildSystemPrompt();
+  // Rule 8's existing flaky-classification discipline (a single failure is
+  // never sufficient) is untouched by rule 12's addition.
+  assert.match(system, /A single failure alone is never sufficient evidence for this classification/i);
+});
+
+test("CASE 5 - knowledge vs direct evidence: direct evidence wins per rule 12's explicit conflict rule", () => {
+  assert.match(rule12Section(), /if a knowledge statement conflicts with what the current-run evidence actually shows, the evidence wins/i);
+});
+
+test("CASE 6 - knowledge vs browserCorrelation: knowledge cannot override a deterministic sameFailureSignature value", () => {
+  const context = {
+    metadata: {},
+    testResults: {},
+    failedTests: [],
+    relevantFiles: {},
+    browserCorrelation: {
+      browsers: ["chrome", "firefox"],
+      failedBrowsers: ["chrome", "firefox"],
+      passedBrowsers: [],
+      primaryBrowser: "chrome",
+      additionalFailedBrowsers: ["firefox"],
+      failureScope: "multi-browser",
+      sameFailureSignature: true,
+    },
+    relevantKnowledge: [
+      {
+        id: "cross-browser-differing-signature-caution",
+        statement: "Differing signatures can indicate distinct mechanisms.",
+      },
+    ],
+  };
+  const prompt = buildUserPrompt(context);
+  const payload = JSON.parse(prompt.slice(prompt.indexOf("{"), prompt.lastIndexOf("}") + 1));
+  // browserCorrelation is rendered exactly as supplied - the knowledge
+  // array cannot mutate it, since they are disjoint fields on the payload.
+  assert.equal(payload.browserCorrelation.sameFailureSignature, true);
+  assert.match(rule12Section(), /relevantKnowledge can never override any of them/i);
+});

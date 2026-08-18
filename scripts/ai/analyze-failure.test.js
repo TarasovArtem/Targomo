@@ -11,10 +11,13 @@ const {
   recommendsArbitraryWait,
   stripCodeFences,
   readHistory,
+  computeRelevantKnowledge,
 } = require("./analyze-failure");
 const { ProviderError, PROVIDER_ERROR_CODES } = require("./providers/provider-error");
 const { MockProvider } = require("./providers/mock-provider");
 const { CLASSIFICATIONS } = require("./qa-agent-prompt");
+const { loadKnowledgeUnits } = require("./knowledge/loader");
+const { selectKnowledge } = require("./knowledge/selector");
 
 const ROOT = path.resolve(__dirname, "..", "..");
 const HISTORY_FILE = path.join(ROOT, "reports", "ai", "history.json");
@@ -301,7 +304,7 @@ test("readHistory: strips internal bookkeeping fields, keeping only the compact 
 // shape" this test suite has, while staying fully deterministic.
 test("buildFailureReport: fixture context through the real MockProvider produces a valid, fully-populated report", async () => {
   const provider = new MockProvider();
-  const report = await buildFailureReport(context, { provider, history: null });
+  const report = await buildFailureReport(context, { provider, history: null, relevantKnowledge: [] });
 
   assert.equal(report.results.length, 1);
   const [result] = report.results;
@@ -319,7 +322,7 @@ test("buildFailureReport: fixture context through the real MockProvider produces
 
 test("buildFailureReport: a provider without a .name still produces a report, falling back to 'unknown'", async () => {
   const provider = { analyze: async () => JSON.stringify({ results: [goodItem()] }) };
-  const report = await buildFailureReport(context, { provider, history: null });
+  const report = await buildFailureReport(context, { provider, history: null, relevantKnowledge: [] });
   assert.equal(report.analysis.provider, "unknown");
 });
 
@@ -327,7 +330,7 @@ test("buildFailureReport: a provider without a .name still produces a report, fa
 
 test("buildFailureReport: sourceContext.browserCorrelation is null when context has no correlation metadata", async () => {
   const provider = providerReturning([goodItem()]);
-  const report = await buildFailureReport(context, { provider, history: null });
+  const report = await buildFailureReport(context, { provider, history: null, relevantKnowledge: [] });
   assert.equal(report.sourceContext.browserCorrelation, null);
 });
 
@@ -342,7 +345,7 @@ test("buildFailureReport: sourceContext.browserCorrelation carries through uncha
     sameFailureSignature: true,
   };
   const provider = providerReturning([goodItem()]);
-  const report = await buildFailureReport({ ...context, browserCorrelation: correlation }, { provider, history: null });
+  const report = await buildFailureReport({ ...context, browserCorrelation: correlation }, { provider, history: null, relevantKnowledge: [] });
   assert.deepEqual(report.sourceContext.browserCorrelation, correlation);
 });
 
@@ -353,7 +356,7 @@ test("buildFailureReport: sourceContext.browserCorrelation carries through uncha
 
 test("buildFailureReport: regression - TEST_BUG + shouldCreateBug=true from the provider is forced to false in the final report", async () => {
   const provider = providerReturning([goodItem({ classification: "TEST_BUG", shouldCreateBug: true })]);
-  const report = await buildFailureReport(context, { provider, history: null });
+  const report = await buildFailureReport(context, { provider, history: null, relevantKnowledge: [] });
 
   const [result] = report.results;
   assert.equal(result.classification, "TEST_BUG");
@@ -364,7 +367,7 @@ test("buildFailureReport: regression - TEST_BUG + shouldCreateBug=true from the 
 
 test("buildFailureReport: PRODUCT_BUG + shouldCreateBug=true from the provider is preserved in the final report", async () => {
   const provider = providerReturning([goodItem({ classification: "PRODUCT_BUG", shouldCreateBug: true })]);
-  const report = await buildFailureReport(context, { provider, history: null });
+  const report = await buildFailureReport(context, { provider, history: null, relevantKnowledge: [] });
 
   const [result] = report.results;
   assert.equal(result.classification, "PRODUCT_BUG");
@@ -386,11 +389,364 @@ test("buildFailureReport: policy is applied per-result, not just to the first it
     goodItem({ test: { title: "test bug test", specFile: context.failedTests[0].specFile }, classification: "TEST_BUG", shouldCreateBug: true }),
   ]);
 
-  const report = await buildFailureReport(multiTestContext, { provider, history: null });
+  const report = await buildFailureReport(multiTestContext, { provider, history: null, relevantKnowledge: [] });
 
   assert.equal(report.results.length, 2);
   assert.equal(report.results[0].classification, "PRODUCT_BUG");
   assert.equal(report.results[0].shouldCreateBug, true);
   assert.equal(report.results[1].classification, "TEST_BUG");
   assert.equal(report.results[1].shouldCreateBug, false);
+});
+
+// --- QA Knowledge production integration (Roadmap #16A) --------------------
+// computeRelevantKnowledge()/buildFailureReport()'s relevantKnowledge option
+// wire scripts/ai/knowledge/'s (Roadmap #15) loader+selector into the real
+// production analysis path. See qa-agent-prompt.test.js for the prompt's
+// textual authority-contract tests; these prove the actual wiring.
+
+function timeoutFailedTest() {
+  return {
+    title: "should select the Gastronomy category",
+    specFile: "cypress/e2e/tests/select_group_POI.cy.js",
+    error: { message: "Timed out retrying after 4000ms: expected cy.get('#mat-checkbox-3') to be checked", stack: null },
+  };
+}
+
+// A. relevant knowledge selected from current-run context reaches the prompt.
+test("Roadmap #16A A: relevant knowledge selected from current-run context reaches the production prompt", async () => {
+  let captured;
+  const provider = {
+    analyze: async (args) => {
+      captured = args;
+      return JSON.stringify({ results: [goodItem({ test: { title: timeoutFailedTest().title, specFile: timeoutFailedTest().specFile } })] });
+    },
+  };
+  const timeoutContext = { ...context, failedTests: [timeoutFailedTest()] };
+
+  // No relevantKnowledge override - exercises the REAL loadKnowledgeUnits()
+  // + selectKnowledge() default against the real production corpus.
+  await buildFailureReport(timeoutContext, { provider, history: null });
+
+  assert.match(captured.userPrompt, /"qa-timeout-error-multiple-causes"/);
+  assert.match(captured.userPrompt, /A 'Timed out retrying' error can arise from several distinct mechanisms/);
+});
+
+// B. irrelevant knowledge does not reach the prompt.
+// Note: Roadmap #16B identified that "framework-cypress-retry-timeout-
+// semantics" previously carried a bare "cypress" tag that matched the
+// selector's default framework marker (present in every real production
+// context.json, which never sets context.frameworks) regardless of actual
+// topical relevance - so that unit used to be selected for essentially
+// every real production failure. Roadmap #16B.1 corrected this (see
+// scripts/ai/knowledge/units/framework-cypress-retry-timeout-semantics.json
+// and scripts/ai/knowledge/selector.test.js's "#16B.1" tests for the
+// dedicated selector-level regression coverage) by removing that tag,
+// leaving only genuinely topical retry/timeout tags. This test now
+// verifies the corrected principle honestly: irrelevant framework
+// retry/timeout knowledge is absent when the current failure contains no
+// relevant retry/timeout evidence - all four production units are
+// correctly excluded here, not just three.
+test("Roadmap #16A B / #16B.1: units unrelated to the current failure (firefox/cross-browser/timeout/framework) are excluded from the real production prompt", async () => {
+  const noMatchContext = {
+    ...context,
+    metadata: { ...context.metadata, browser: "chrome" },
+    failedTests: [
+      {
+        title: "network call fails",
+        specFile: "cypress/e2e/tests/poi_data_requests.cy.js",
+        error: { message: "NetworkError: connection reset by peer", stack: null },
+      },
+    ],
+  };
+  let captured;
+  const provider = {
+    analyze: async (args) => {
+      captured = args;
+      return JSON.stringify({
+        results: [goodItem({ test: { title: "network call fails", specFile: noMatchContext.failedTests[0].specFile } })],
+      });
+    },
+  };
+
+  const report = await buildFailureReport(noMatchContext, { provider, history: null });
+
+  assert.doesNotMatch(captured.userPrompt, /"project-firefox-execution-environment-split"/);
+  assert.doesNotMatch(captured.userPrompt, /"cross-browser-differing-signature-caution"/);
+  assert.doesNotMatch(captured.userPrompt, /"qa-timeout-error-multiple-causes"/);
+  assert.doesNotMatch(captured.userPrompt, /"framework-cypress-retry-timeout-semantics"/);
+  assert.match(captured.userPrompt, /"relevantKnowledge": \[\]/);
+  assert.equal(report.results.length, 1);
+  assert.deepEqual(validateAnalysisItem(report.results[0], 0), []);
+});
+
+// C. zero-match selector result produces a valid prompt (Phase 10).
+test("Roadmap #16A C / Phase 10: selectKnowledge() genuinely returning [] still produces a valid, unaffected report", async () => {
+  // Proven at the true selector boundary (an empty units list, rather than
+  // relying on every real curated unit happening to score 0, which
+  // framework-cypress-retry-timeout-semantics never does in production -
+  // see the note above) - this isolates "zero selected knowledge" from
+  // "which specific units this corpus happens to contain".
+  assert.deepEqual(selectKnowledge(context, []), []);
+
+  const provider = providerReturning([goodItem()]);
+  const report = await buildFailureReport(context, { provider, history: null, relevantKnowledge: [] });
+
+  assert.equal(report.results.length, 1);
+  assert.deepEqual(validateAnalysisItem(report.results[0], 0), []);
+  assert.equal(report.results[0].classification, "TEST_BUG");
+});
+
+// D. deterministic input -> byte-identical relevantKnowledge across repeated calls.
+test("Roadmap #16A D: computeRelevantKnowledge is deterministic - same context produces deeply identical output across repeated calls", () => {
+  const timeoutContext = { ...context, failedTests: [timeoutFailedTest()] };
+  const first = computeRelevantKnowledge(timeoutContext);
+  const second = computeRelevantKnowledge(timeoutContext);
+  assert.deepEqual(first, second);
+});
+
+// E. maxUnits/maxChars budget remains respected through production wiring.
+test("Roadmap #16A E: computeRelevantKnowledge uses the selector's real default budget (no override introduced by the wiring)", () => {
+  // A context deliberately matching every real production unit's tags at
+  // once (firefox browser, timeout error text, cypress framework marker,
+  // multi-browser correlation) - even so, computeRelevantKnowledge must
+  // still be bounded by selectKnowledge's own default maxUnits/maxChars,
+  // not some looser limit introduced by the production wiring.
+  const allMatchingContext = {
+    ...context,
+    metadata: { ...context.metadata, browser: "firefox" },
+    failedTests: [timeoutFailedTest()],
+    browserCorrelation: {
+      browsers: ["chrome", "firefox"],
+      failedBrowsers: ["chrome", "firefox"],
+      passedBrowsers: [],
+      primaryBrowser: "firefox",
+      additionalFailedBrowsers: ["chrome"],
+      failureScope: "multi-browser",
+      sameFailureSignature: false,
+    },
+  };
+
+  const viaWiring = computeRelevantKnowledge(allMatchingContext);
+  const viaDirectSelectorCall = selectKnowledge(allMatchingContext, loadKnowledgeUnits());
+
+  assert.deepEqual(viaWiring, viaDirectSelectorCall);
+  assert.ok(viaWiring.length <= 5, "must never exceed selectKnowledge's default maxUnits");
+  const totalChars = viaWiring.reduce((sum, k) => sum + k.statement.length, 0);
+  assert.ok(totalChars <= 2000, "must never exceed selectKnowledge's default maxChars");
+});
+
+// F. selector runs before provider output exists.
+test("Roadmap #16A F: knowledge selection is already complete by the time provider.analyze() is invoked (before any provider output exists)", async () => {
+  let userPromptAtCallTime = null;
+  const provider = {
+    analyze: async (args) => {
+      // Captured synchronously at call time, before this function returns
+      // anything - if selection happened after the provider call instead
+      // of before, relevantKnowledge could not already be present here.
+      userPromptAtCallTime = args.userPrompt;
+      return JSON.stringify({ results: [goodItem({ test: { title: timeoutFailedTest().title, specFile: timeoutFailedTest().specFile } })] });
+    },
+  };
+  const timeoutContext = { ...context, failedTests: [timeoutFailedTest()] };
+
+  await buildFailureReport(timeoutContext, { provider, history: null });
+
+  assert.match(userPromptAtCallTime, /"qa-timeout-error-multiple-causes"/);
+});
+
+// G/H. knowledge integration adds zero provider calls; single logical
+// analysis remains exactly one.
+test("Roadmap #16A G/H: provider.analyze() is called exactly once, regardless of knowledge selection", async () => {
+  let callCount = 0;
+  const provider = {
+    analyze: async () => {
+      callCount += 1;
+      return JSON.stringify({ results: [goodItem({ test: { title: timeoutFailedTest().title, specFile: timeoutFailedTest().specFile } })] });
+    },
+  };
+  const timeoutContext = { ...context, failedTests: [timeoutFailedTest()] };
+
+  await buildFailureReport(timeoutContext, { provider, history: null });
+
+  assert.equal(callCount, 1);
+});
+
+// I. no per-browser knowledge-provider call is introduced.
+test("Roadmap #16A I: computeRelevantKnowledge is a plain synchronous function with no provider dependency at all", () => {
+  const timeoutContext = { ...context, failedTests: [timeoutFailedTest()] };
+  const result = computeRelevantKnowledge(timeoutContext);
+  // Synchronous return (not a Promise) is itself structural proof this
+  // cannot be calling an async provider.analyze() - a provider call would
+  // force this function to return a Promise.
+  assert.equal(result instanceof Promise, false);
+  assert.ok(Array.isArray(result));
+  // computeRelevantKnowledge's own signature takes only a context - no
+  // provider/browser-loop parameter exists for it to call per-browser.
+  assert.equal(computeRelevantKnowledge.length, 1);
+});
+
+// CASE 7 (Phase 13) / J (Phase 12): knowledge cannot bypass application
+// policy - a plausible-sounding knowledge statement must not change
+// agent-policy.js's shouldCreateBug ceiling for a non-PRODUCT_BUG result.
+test("Roadmap #16A CASE 7: knowledge suggesting a plausible bug does not bypass application policy - TEST_BUG + shouldCreateBug=true is still forced to false", async () => {
+  const provider = providerReturning([goodItem({ classification: "TEST_BUG", shouldCreateBug: true })]);
+
+  const report = await buildFailureReport(context, {
+    provider,
+    history: null,
+    relevantKnowledge: [
+      { id: "qa-timeout-error-multiple-causes", statement: "A timeout error can indicate several distinct mechanisms, including product-side issues." },
+    ],
+  });
+
+  const [result] = report.results;
+  assert.equal(result.classification, "TEST_BUG");
+  assert.equal(result.shouldCreateBug, false);
+  assert.equal(result.policy.adjusted, true);
+  assert.equal(result.policy.originalShouldCreateBug, true);
+});
+
+// --- Knowledge observability (Roadmap #16C) --------------------------------
+// The exact knowledge units the provider actually received must be
+// recoverable from the frozen artifact (ai-report.json's sourceContext),
+// not only reconstructible by re-running the selector against the corpus
+// as it exists today (which could have drifted since the report was
+// generated). pickSourceContext() reads context.relevantKnowledge directly
+// - the same value already threaded into the prompt - rather than calling
+// selectKnowledge() a second time.
+
+test("Roadmap #16C 1/2: selected knowledge appears in report.sourceContext.relevantKnowledge, with exact ids/statements matching what the provider prompt received", async () => {
+  const timeoutContext = { ...context, failedTests: [timeoutFailedTest()] };
+  let captured;
+  const provider = {
+    analyze: async (args) => {
+      captured = args;
+      return JSON.stringify({ results: [goodItem({ test: { title: timeoutFailedTest().title, specFile: timeoutFailedTest().specFile } })] });
+    },
+  };
+
+  const report = await buildFailureReport(timeoutContext, { provider, history: null });
+
+  assert.ok(Array.isArray(report.sourceContext.relevantKnowledge));
+  assert.ok(report.sourceContext.relevantKnowledge.length > 0);
+
+  const promptPayload = JSON.parse(captured.userPrompt.slice(captured.userPrompt.indexOf("{"), captured.userPrompt.lastIndexOf("}") + 1));
+  assert.deepEqual(report.sourceContext.relevantKnowledge, promptPayload.relevantKnowledge);
+});
+
+test("Roadmap #16C 3: zero selected knowledge persists as sourceContext.relevantKnowledge = [], not omitted", async () => {
+  const provider = providerReturning([goodItem()]);
+  const report = await buildFailureReport(context, { provider, history: null, relevantKnowledge: [] });
+  assert.deepEqual(report.sourceContext.relevantKnowledge, []);
+  assert.ok("relevantKnowledge" in report.sourceContext);
+});
+
+test("Roadmap #16C 4: relevantKnowledge is not regenerated after provider analysis - sourceContext reflects the exact value supplied, not a fresh selectKnowledge() call", async () => {
+  // Deliberately inject knowledge that the real selector would NOT compute
+  // for this context (context has no timeout-shaped error at all) - if
+  // pickSourceContext() were re-running selection instead of reading
+  // context.relevantKnowledge, this injected value would be silently
+  // replaced with [] (or whatever the real selector produces).
+  const injectedKnowledge = [{ id: "synthetic-test-only-unit", statement: "A statement that the real selector would never produce for this context." }];
+  const provider = providerReturning([goodItem()]);
+
+  const report = await buildFailureReport(context, { provider, history: null, relevantKnowledge: injectedKnowledge });
+
+  assert.deepEqual(report.sourceContext.relevantKnowledge, injectedKnowledge);
+  // Sanity check: the real selector genuinely would not have produced this
+  // for the unmodified `context` fixture (no timeout/retry/firefox/
+  // correlation signal present).
+  const realSelection = selectKnowledge(context, loadKnowledgeUnits());
+  assert.notDeepEqual(realSelection, injectedKnowledge);
+});
+
+test("Roadmap #16C 5: persisting relevantKnowledge into sourceContext adds zero provider calls", async () => {
+  let callCount = 0;
+  const provider = {
+    analyze: async () => {
+      callCount += 1;
+      return JSON.stringify({ results: [goodItem({ test: { title: timeoutFailedTest().title, specFile: timeoutFailedTest().specFile } })] });
+    },
+  };
+  const timeoutContext = { ...context, failedTests: [timeoutFailedTest()] };
+
+  const report = await buildFailureReport(timeoutContext, { provider, history: null });
+
+  assert.equal(callCount, 1);
+  assert.ok(report.sourceContext.relevantKnowledge.length > 0);
+});
+
+test("Roadmap #16C 6: sourceContext observability does not affect classification/policy behavior", async () => {
+  const provider = providerReturning([goodItem({ classification: "TEST_BUG", shouldCreateBug: true })]);
+  const report = await buildFailureReport(context, {
+    provider,
+    history: null,
+    relevantKnowledge: [{ id: "qa-timeout-error-multiple-causes", statement: "A timeout error can indicate several distinct mechanisms." }],
+  });
+
+  // Same policy outcome as the equivalent pre-#16C regression test - adding
+  // sourceContext.relevantKnowledge changes nothing about the classify ->
+  // validate -> policy pipeline.
+  assert.equal(report.results[0].classification, "TEST_BUG");
+  assert.equal(report.results[0].shouldCreateBug, false);
+  assert.equal(report.results[0].policy.adjusted, true);
+});
+
+test("Roadmap #16C 7: existing sourceContext fields (browserCorrelation, browser, commit, etc.) remain unchanged alongside the new relevantKnowledge field", async () => {
+  const correlation = {
+    browsers: ["chrome", "edge"],
+    failedBrowsers: ["chrome", "edge"],
+    passedBrowsers: [],
+    primaryBrowser: "chrome",
+    additionalFailedBrowsers: ["edge"],
+    failureScope: "multi-browser",
+    sameFailureSignature: true,
+  };
+  const provider = providerReturning([goodItem()]);
+  const report = await buildFailureReport(
+    { ...context, browserCorrelation: correlation },
+    { provider, history: null, relevantKnowledge: [] }
+  );
+
+  assert.deepEqual(report.sourceContext.browserCorrelation, correlation);
+  assert.equal(report.sourceContext.repository, "o/r");
+  assert.equal(report.sourceContext.commit, "abc123");
+  assert.equal(report.sourceContext.branch, "main");
+  assert.equal(report.sourceContext.browser, "chrome");
+  assert.deepEqual(report.sourceContext.relevantKnowledge, []);
+});
+
+// Phase 10: prompt/report consistency - the knowledge visible in the real
+// provider prompt for a given analysis must correspond exactly to what
+// gets frozen into sourceContext for that same analysis, so a future
+// reader of the frozen report can reconstruct "what did the model see"
+// without needing the raw prompt text at all.
+test("Roadmap #16C Phase 10: prompt-visible relevantKnowledge and report.sourceContext.relevantKnowledge are exactly consistent for the same analysis", async () => {
+  const allMatchingContext = {
+    ...context,
+    metadata: { ...context.metadata, browser: "firefox" },
+    failedTests: [timeoutFailedTest()],
+    browserCorrelation: {
+      browsers: ["chrome", "firefox"],
+      failedBrowsers: ["chrome", "firefox"],
+      passedBrowsers: [],
+      primaryBrowser: "firefox",
+      additionalFailedBrowsers: ["chrome"],
+      failureScope: "multi-browser",
+      sameFailureSignature: false,
+    },
+  };
+  let captured;
+  const provider = {
+    analyze: async (args) => {
+      captured = args;
+      return JSON.stringify({ results: [goodItem({ test: { title: timeoutFailedTest().title, specFile: timeoutFailedTest().specFile } })] });
+    },
+  };
+
+  const report = await buildFailureReport(allMatchingContext, { provider, history: null });
+
+  const promptPayload = JSON.parse(captured.userPrompt.slice(captured.userPrompt.indexOf("{"), captured.userPrompt.lastIndexOf("}") + 1));
+  assert.ok(promptPayload.relevantKnowledge.length > 1, "expected multiple units to genuinely match this multi-signal context");
+  assert.deepEqual(report.sourceContext.relevantKnowledge, promptPayload.relevantKnowledge);
 });

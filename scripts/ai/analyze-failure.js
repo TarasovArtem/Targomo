@@ -37,6 +37,8 @@ const { createProvider } = require("./providers");
 const { normalizeProviderError } = require("./providers/provider-error");
 const { validateProvider, validateProviderResponse } = require("./providers/provider-contract");
 const { applyAgentPolicy } = require("./agent-policy");
+const { loadKnowledgeUnits } = require("./knowledge/loader");
+const { selectKnowledge } = require("./knowledge/selector");
 
 const ROOT = path.resolve(__dirname, "..", "..");
 const CONTEXT_FILE = path.join(ROOT, "reports", "ai", "context.json");
@@ -91,6 +93,18 @@ function readHistory() {
   };
 }
 
+// Deterministic, offline QA Knowledge selection (Roadmap #16A) - reuses
+// Roadmap #15's loader/selector directly rather than duplicating their
+// logic. Adds zero provider/network calls: loadKnowledgeUnits() is local
+// filesystem-only (throws loudly on a malformed curated unit - see
+// knowledge/loader.js - never silently skips one), selectKnowledge() is a
+// pure, synchronous, in-memory function - see scripts/ai/knowledge/. Named
+// and exported (like readHistory() below) so tests can inject a fixed
+// result instead of touching the real scripts/ai/knowledge/units/ corpus.
+function computeRelevantKnowledge(context) {
+  return selectKnowledge(context, loadKnowledgeUnits());
+}
+
 function pickSourceContext(context) {
   const m = context.metadata || {};
   return {
@@ -110,6 +124,17 @@ function pickSourceContext(context) {
     // without re-deriving it. null for contexts that weren't produced by
     // the aggregator (e.g. a local run).
     browserCorrelation: context.browserCorrelation ?? null,
+    // The EXACT QA Knowledge units this analysis's provider call actually
+    // received (Roadmap #16C) - read directly off context.relevantKnowledge
+    // (already attached in buildFailureReport(), before runProviderAnalysis
+    // ever ran), never recomputed via a second selectKnowledge() call here.
+    // Recomputing would risk drifting from what the model actually saw if
+    // the corpus changed between analysis and report-building, however
+    // unlikely - reading the same value already threaded through the
+    // prompt is the only way to guarantee this field is truthful. Always
+    // an array (never omitted): [] is a meaningful, intentional signal
+    // that no curated knowledge matched this run, not an absence of data.
+    relevantKnowledge: context.relevantKnowledge ?? [],
   };
 }
 
@@ -258,7 +283,10 @@ async function runProviderAnalysis(
 // and a fixed history value without touching process.env or the real
 // reports/ai/history.json file; production (main(), below) always lets
 // both default to their real implementations.
-async function buildFailureReport(context, { provider = createProvider(), history = readHistory() } = {}) {
+async function buildFailureReport(
+  context,
+  { provider = createProvider(), history = readHistory(), relevantKnowledge = computeRelevantKnowledge(context) } = {}
+) {
   const failedTests = context.failedTests || [];
   const generatedAt = new Date().toISOString();
 
@@ -266,6 +294,14 @@ async function buildFailureReport(context, { provider = createProvider(), histor
   // same context object buildUserPrompt already reads from, so a missing
   // reports/ai/history.json changes nothing else about this run.
   if (history) context.history = history;
+
+  // Deterministic QA Knowledge selection (Roadmap #16A), attached onto the
+  // same context object exactly like history above - buildUserPrompt (via
+  // runProviderAnalysis below) reads context.relevantKnowledge the same
+  // way it already reads context.browserCorrelation/knownProjectConstraints.
+  // Always an array (selectKnowledge() never returns null), so this is an
+  // unconditional assignment, unlike history's `if (history)` guard.
+  context.relevantKnowledge = relevantKnowledge;
 
   const { results } = await runProviderAnalysis(provider, context);
 
@@ -388,5 +424,6 @@ module.exports = {
   stripCodeFences,
   pickSourceContext,
   readHistory,
+  computeRelevantKnowledge,
   MODEL,
 };
