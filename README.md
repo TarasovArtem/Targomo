@@ -374,6 +374,22 @@ Baseline v4 extends Baseline v3 additively with both new samples frozen at their
 
 `npm run eval:ai:v4` / `npm run eval:regression:v4` are available locally and are **fully offline** - Dataset v4 is **not** added to GitHub Actions in this phase; `QA Agent evaluation` continues to run only the v1/v2/v3 commands it already ran before this change.
 
+### QA Knowledge / Skills Layer Foundation (Roadmap #15)
+
+**Status: IMPLEMENTED / READY FOR REVIEW.** Adds the storage, validation, and deterministic offline-selection foundation for a curated QA Knowledge Layer - `scripts/ai/knowledge/`. This is a foundation only: **the production prompt is not wired to it yet** (see Roadmap #16 below).
+
+Knowledge is stored as small, atomic, schema-validated JSON units (`scripts/ai/knowledge/units/*.json`), never as one giant `skills.md` - each unit carries `id`, `category` (`PROJECT`/`GENERAL_QA`/`CROSS_BROWSER`/`FRAMEWORK`/`CI`), `sourceType` (`PROJECT_VERIFIED`/`CONTROLLED_EXPERIMENT`/`CURATED_INTERNAL`/`CURATED_EXTERNAL`), `source`, `verifiedAt`, `tags`, `appliesTo` (browser/framework scoping), `statement`, and `priority`. `schema.js` validates a single unit; `loader.js` reads every file under `units/`, validates each one, and fails loudly (not silently) on invalid JSON, a schema-invalid unit, or a duplicate id - a curated knowledge file is always human-authored, so an authoring mistake must be visible in tests/CI, never quietly skipped.
+
+The initial production corpus contains **4 curated units** (`project-firefox-execution-environment-split`, `cross-browser-differing-signature-caution`, `qa-timeout-error-multiple-causes`, `framework-cypress-retry-timeout-semantics` - 1 `PROJECT_VERIFIED`, 3 `CURATED_INTERNAL`, 0 `CURATED_EXTERNAL`, 0 `CONTROLLED_EXPERIMENT`). Each is deliberately generalized, reusable guidance - not a copy of any one historical experiment/PR/run.
+
+`selector.js` implements `selectKnowledge(context, units, options)`: a **deterministic, fully offline** selection mechanism requiring **zero AI provider calls** of any kind (no embeddings, no vector search, no LLM-based selection). It uses only signals available *before* the provider is ever called - failed-test error text/titles/spec paths, `relevantFiles` paths, `browserCorrelation`, `knownProjectConstraints`, and the browser/framework identity - and deliberately never reads `classification`, `rootCause`, `evidence`, `recommendedFix`, `confidence`, or `shouldCreateBug`, since none of those exist yet at selection time and using them would silently require a second AI phase. Units are structurally scoped by `appliesTo.browsers`/`appliesTo.frameworks`, then ranked by **relevance (match score) first**, with `priority` and `id` only as deterministic tie-breaks - a high-priority but irrelevant unit can never displace a relevant one. Selection respects a hard budget (`maxUnits = 5`, `maxChars = 2000` by default) without ever truncating a statement; a unit that would exceed the remaining budget is skipped, not cut short. Zero matching knowledge is a normal, valid outcome (`[]`, never an error), and independently relevant-but-conflicting units may coexist in the result - the model/evidence contract (Roadmap #11), not the selector, is responsible for resolving guidance conflicts.
+
+**Knowledge is GUIDANCE ONLY, never current-run EVIDENCE.** By design and by construction, knowledge cannot override direct current-run evidence, cannot override `browserCorrelation`, cannot override history semantics (Roadmap #8), and cannot override application policy (`agent-policy.js`'s `shouldCreateBug` ceiling) - the knowledge subsystem currently has no write path into `context.json`, `ai-report.json`, or any policy decision at all, since nothing calls it from production code yet.
+
+Not part of this phase: production prompt integration (`qa-agent-prompt.js`/`buildUserPrompt()` are untouched), any `relevantKnowledge` field on the context payload, a `knowledgeGrounding` evaluation dimension, and any external/curated-external knowledge (`CURATED_EXTERNAL` exists in the schema so a future change won't require a breaking migration, but zero such units exist today and nothing is fetched from the web). Dataset v1-v4 and Baseline v1-v4 remain byte-for-byte unmodified.
+
+**Proposed future contract (Roadmap #16, not implemented yet):** a `relevantKnowledge` key on the `buildUserPrompt()` payload, labeled explicitly as *"Relevant curated QA knowledge. Interpretive guidance only; not evidence about the current run."* - it may support an inference or suggest a diagnostic next step, but may never establish a fact, override evidence, override `browserCorrelation`, override history semantics, or override policy.
+
 ### Roadmap
 
 **Done:**
@@ -396,18 +412,15 @@ Baseline v4 extends Baseline v3 additively with both new samples frozen at their
 - Qualitative Regression Protection (Roadmap #12) - see [above](#qualitative-regression-protection-roadmap-12); `rootCause`/`evidence`/`recommendedFix` are now per-sample regression-protected in Baseline v1/v2/v3, using the same `fail < partial < pass` ordering as correlation quality, evaluation-only, no production behavior change
 - Additive Post-Prompt Evaluation Dataset v4 (Roadmap #13) - see [above](#additive-post-prompt-evaluation-dataset-v4-roadmap-13); status: **implemented / ready for review** - two independent post-prompt controlled re-validations of Experiment #41 stored as separate samples alongside the unmodified pre-prompt historical record, `eval:ai:v4`/`eval:regression:v4` available locally, not yet in CI
 - Browser Matrix Expansion - Firefox (Roadmap #14) - see [Continuous Integration](#continuous-integration) and [QA Agent](#qa-agent-ai-failure-analysis) above; status: **implemented locally / pending CI validation** - a dedicated `Cypress - firefox` job runs the existing, unmodified E2E suite on the bare `ubuntu-latest` runner (Roadmap #14B's proven execution strategy), feeds the same centralized aggregator/triage/single-AI-call pipeline as Chrome/Edge, and is deliberately not yet a required branch-protection check; historical Dataset v1-v4/Baseline v1-v4 are unmodified, since this is production execution coverage, not evaluation recuration
+- QA Knowledge / Skills Layer Foundation (Roadmap #15) - see [above](#qa-knowledge--skills-layer-foundation-roadmap-15); status: **implemented / ready for review** - atomic, schema-validated knowledge units (`scripts/ai/knowledge/`), a loader, and a deterministic, zero-provider-call offline selector, plus 4 curated initial units; knowledge is guidance only and cannot override evidence/browserCorrelation/history/policy; production prompt wiring is deliberately absent, no external knowledge exists yet, Dataset/Baseline v1-v4 unmodified
 
 **Next:**
 
-- QA Knowledge / Skills Layer (Roadmap #15)
+- Production Knowledge Integration + Evaluation (Roadmap #16)
 
 **Then:**
 
-- Deterministic Knowledge Selection (Roadmap #16)
-
-**Then:**
-
-- External Knowledge Integration (Roadmap #17)
+- Curated External Knowledge Integration (Roadmap #17)
 
 **Planned / future work** (not implemented yet):
 
