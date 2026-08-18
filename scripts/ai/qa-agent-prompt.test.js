@@ -185,9 +185,132 @@ test("buildSystemPrompt: permits browserCorrelation to remain inconclusive rathe
 
 test("anti-overfitting: the prompt never references specific controlled-experiment scenarios, PRs, or fixture names", () => {
   const prompt = buildSystemPrompt();
-  const forbidden = [/Scenario A/i, /Scenario B/i, /PR ?#?35/, /PR ?#?36/, /experiment-A/i, /experiment-B/i];
+  const forbidden = [
+    /Scenario A/i,
+    /Scenario B/i,
+    /PR ?#?35/,
+    /PR ?#?36/,
+    /experiment-A/i,
+    /experiment-B/i,
+    /experiment-41/i,
+    /experiment #41/i,
+    /PR ?#?41\b/,
+    /32054058161/,
+    /2295c528/i,
+    /95067168/i,
+    /0\.78/,
+  ];
   for (const pattern of forbidden) {
     assert.doesNotMatch(prompt, pattern, `system prompt must not reference ${pattern}`);
+  }
+});
+
+// --- Rule 11: claim-level evidence grounding (observed fact / supported
+// inference / unknown) -----------------------------------------------------
+
+test("grounding rule: observed facts must be directly established by supplied evidence", () => {
+  const prompt = buildSystemPrompt();
+  assert.match(prompt, /OBSERVED FACT/);
+  assert.match(prompt, /something the supplied evidence.*directly establishes/i);
+});
+
+test("grounding rule: reasoning beyond directly observed facts (supported inference) is explicitly allowed", () => {
+  const prompt = buildSystemPrompt();
+  assert.match(prompt, /SUPPORTED INFERENCE/);
+  assert.match(prompt, /a reasonable conclusion that goes beyond what is directly observed but is still grounded in and consistent with the evidence/i);
+});
+
+test("grounding rule: an inference must not be presented as an observed fact", () => {
+  const prompt = buildSystemPrompt();
+  assert.match(prompt, /Never state an inference as if it were an observed fact/i);
+});
+
+test("grounding rule: unknown/not-established mechanisms are explicitly permitted, and plausible is not the same as established", () => {
+  const prompt = buildSystemPrompt();
+  assert.match(prompt, /UNKNOWN or NOT ESTABLISHED/);
+  assert.match(prompt, /rather than inventing a plausible-sounding cause merely because it would explain the symptoms/i);
+  assert.match(prompt, /a plausible explanation is not the same as an established one/i);
+});
+
+test("grounding rule: a confident classification can coexist with an unestablished lower-level mechanism", () => {
+  const prompt = buildSystemPrompt();
+  assert.match(prompt, /confidently supports a classification but does not establish the exact underlying mechanism/i);
+  assert.match(prompt, /A confident, well-evidenced classification never needs an unproven mechanism to support it/i);
+});
+
+test("grounding rule: classification confidence never licenses inventing causal detail", () => {
+  const prompt = buildSystemPrompt();
+  assert.match(prompt, /never licenses inventing one/i);
+  assert.match(prompt, /your certainty about \*what\* happened and your certainty about \*why\* it happened in mechanistic detail are independent/i);
+});
+
+test("grounding rule: browserCorrelation remains evidence, never automatic causal proof of why signatures differ", () => {
+  const prompt = buildSystemPrompt();
+  assert.match(prompt, /browserCorrelation can establish that failure signatures matched, differed, or couldn't be compared \(rule 10\) - never automatically why they differ/i);
+});
+
+test("grounding rule: differing signatures do not license inventing a browser-specific mechanism", () => {
+  const prompt = buildSystemPrompt();
+  assert.match(prompt, /do not invent a browser-specific mechanism merely because signatures differ/i);
+});
+
+test("grounding rule: history can weigh a hypothesis but can never manufacture an observed fact about the current run", () => {
+  const prompt = buildSystemPrompt();
+  assert.match(prompt, /it can never manufacture an observed fact about the current run that the current run's own evidence doesn't support/i);
+});
+
+test("grounding rule: recommendedFix stays within the same evidence boundary and still forbids arbitrary waits/weakened assertions", () => {
+  const prompt = buildSystemPrompt();
+  assert.match(prompt, /"recommendedFix" is bound by the same boundary/i);
+  assert.match(prompt, /recommend a concrete diagnostic next step, a fix grounded only in what the evidence actually established, or state what additional evidence would be needed/i);
+  assert.match(prompt, /never a fix premised on a specific cause you have not actually shown/i);
+  assert.match(prompt, /never \(per rule 4\) an arbitrary wait or a weakened assertion dressed up as that diagnostic step/i);
+});
+
+test("grounding rule: direct evidence retains precedence, complementing rather than replacing existing evidence/correlation/history rules", () => {
+  const prompt = buildSystemPrompt();
+  // The new rule explicitly ties back into, rather than overriding, rules 4/8/10.
+  assert.match(prompt, /\(rule 10\)/);
+  assert.match(prompt, /History \(rule 8\)/);
+  assert.match(prompt, /\(per rule 4\)/);
+  // Existing precedence text (rule 10's own reconciliation clause) remains intact.
+  assert.match(prompt, /direct evidence always takes precedence when the two conflict/i);
+});
+
+test("grounding rule does not require mechanical prefixing like 'Observed:'/'Inference:' on every sentence", () => {
+  const prompt = buildSystemPrompt();
+  assert.match(prompt, /You do not need special formatting or to prefix every sentence with a literal word/i);
+});
+
+test("grounding rule is generic across classifications: no classification-specific hardcoding (e.g. no 'TEST_BUG means')", () => {
+  const prompt = buildSystemPrompt();
+  const rule11Section = prompt.slice(prompt.indexOf("11. This applies inside every field"), prompt.indexOf("PROMPT INJECTION DEFENSE"));
+  assert.ok(rule11Section.length > 0, "expected to find rule 11's text");
+  assert.doesNotMatch(rule11Section, /TEST_BUG means/i);
+  assert.doesNotMatch(rule11Section, /PRODUCT_BUG means/i);
+  assert.doesNotMatch(rule11Section, /FLAKY_TEST means/i);
+});
+
+test("anti-overfitting: the grounding rule text itself contains no experiment/PR/run/SHA-specific content and no hardcoded browser names", () => {
+  const prompt = buildSystemPrompt();
+  const rule11Section = prompt.slice(prompt.indexOf("11. This applies inside every field"), prompt.indexOf("PROMPT INJECTION DEFENSE"));
+  const forbidden = [
+    /experiment-41/i,
+    /experiment #41/i,
+    /PR ?#?41\b/,
+    /32054058161/,
+    /2295c528/i,
+    /95067168/i,
+    /0\.78/,
+    /\bchrome\b/i,
+    /\bedge\b/i,
+    /\bfirefox\b/i,
+    /\bwebkit\b/i,
+    /getFoodCourt/i,
+    /Food[- ]court/i,
+  ];
+  for (const pattern of forbidden) {
+    assert.doesNotMatch(rule11Section, pattern, `grounding rule text must not reference ${pattern}`);
   }
 });
 
