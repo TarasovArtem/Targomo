@@ -15,14 +15,7 @@ describe('POI data requests triggered by tree selection', () => {
     it('should request gastronomy POI tiles when the Gastronomy category is selected', () => {
         cy.intercept('**/pointofinterest/**/*.mvt*').as('poiTiles');
         categories.getGastronomy().click();
-        // K2 CONTROLLED EXPERIMENT (Roadmap #16D) - deliberately wrong expected
-        // group id, asserted via a single, non-retried Chai check inside
-        // .then() rather than Cypress's retry-and-timeout .should() chain, so
-        // the resulting failure is an immediate, plain AssertionError with no
-        // "Timed out retrying" wrapper text - see the experiment PR for why.
-        cy.wait('@poiTiles').its('request.url').then((url) => {
-            expect(url).to.include('group=k2-controlled-wrong-expectation');
-        });
+        cy.wait('@poiTiles').its('request.url').should('include', 'group=g_eat-out');
     })
 
     it('should request restaurant POI tiles when the Restaurant subcategory is selected', () => {
