@@ -6,25 +6,37 @@
       "classificationStatus": "fail",
       "shouldRetryCorrect": false,
       "shouldCreateBugCorrect": true,
-      "fabricatedEvidence": false
+      "fabricatedEvidence": false,
+      "rootCause": "partial",
+      "evidence": "partial",
+      "recommendedFix": "fail"
     },
     "experiment-3-application-like-mismatch": {
       "classificationStatus": "pass",
       "shouldRetryCorrect": true,
       "shouldCreateBugCorrect": true,
-      "fabricatedEvidence": false
+      "fabricatedEvidence": false,
+      "rootCause": "pass",
+      "evidence": "pass",
+      "recommendedFix": "pass"
     },
     "experiment-4-deterministic-test-bug-history": {
       "classificationStatus": "pass",
       "shouldRetryCorrect": true,
       "shouldCreateBugCorrect": true,
-      "fabricatedEvidence": false
+      "fabricatedEvidence": false,
+      "rootCause": "pass",
+      "evidence": "pass",
+      "recommendedFix": "pass"
     },
     "experiment-5-real-flaky-test": {
       "classificationStatus": "ambiguous",
       "shouldRetryCorrect": true,
       "shouldCreateBugCorrect": true,
-      "fabricatedEvidence": false
+      "fabricatedEvidence": false,
+      "rootCause": "partial",
+      "evidence": "partial",
+      "recommendedFix": "pass"
     }
   }
 }

@@ -15,6 +15,14 @@
  * scoring.js. run()/main() below are the only I/O-touching parts, and they
  * reuse validateDataset()/evaluateDataset() rather than re-implementing any
  * scoring logic.
+ *
+ * Protects seven dimensions per sample (Roadmap #12 added the last three):
+ * classification, shouldRetry, shouldCreateBug, fabricatedEvidence,
+ * rootCause, evidence, recommendedFix. rootCause/evidence/recommendedFix use
+ * the same fail<partial<pass ordering (with not_applicable outside that
+ * ordering) already established for correlation quality in
+ * regression-v2.js/regression-v3.js - any regression on any dimension, for
+ * any sample, still outweighs any number of simultaneous improvements.
  */
 
 "use strict";
@@ -28,6 +36,9 @@ const { evaluateDataset } = require("./scoring");
 
 const DEFAULT_DATASET_PATH = path.join(__dirname, "dataset.json");
 const DEFAULT_BASELINE_PATH = path.join(__dirname, "baseline-v1.json");
+
+const QUALITY_RANK = { fail: 0, partial: 1, pass: 2 };
+const QUALITATIVE_DIMENSIONS = ["rootCause", "evidence", "recommendedFix"];
 
 // scoring.js's per-sample classification.status ("correct"/"incorrect"/
 // "ambiguous") uses different words than the baseline's classificationStatus
@@ -57,6 +68,24 @@ function compareCorrectness(baselineCorrect, currentCorrect) {
 function compareFabricatedEvidence(baselineValue, currentValue) {
   if (baselineValue === false && currentValue === true) return "regression";
   if (baselineValue === true && currentValue === false) return "improvement";
+  return "unchanged";
+}
+
+// Roadmap #12: shared ordering for the three qualitative dimensions
+// (rootCause/evidence/recommendedFix) - fail(0) < partial(1) < pass(2), with
+// not_applicable outside that ordering entirely. Identical semantics to the
+// correlation-quality comparator already established in regression-v2.js/
+// regression-v3.js: both sides not_applicable is "unchanged"; either side
+// (but not both) being not_applicable is "informational", never silently
+// scored as a quality regression or improvement.
+function compareQualityTernary(baselineValue, currentValue) {
+  if (baselineValue === "not_applicable" && currentValue === "not_applicable") return "unchanged";
+  if (baselineValue === "not_applicable" || currentValue === "not_applicable") return "informational";
+
+  const baselineRank = QUALITY_RANK[baselineValue];
+  const currentRank = QUALITY_RANK[currentValue];
+  if (currentRank > baselineRank) return "improvement";
+  if (currentRank < baselineRank) return "regression";
   return "unchanged";
 }
 
@@ -106,6 +135,13 @@ function compareEvaluationToBaseline(currentEvaluation, baseline) {
   let unchanged = 0;
   let informational = 0;
 
+  const tally = (change) => {
+    if (change === "regression") regressions += 1;
+    else if (change === "improvement") improvements += 1;
+    else if (change === "informational") informational += 1;
+    else unchanged += 1;
+  };
+
   for (const currentSample of currentEvaluation.samples) {
     const baselineSample = baseline.samples[currentSample.id];
     const currentClassificationStatus = toBaselineClassificationStatus(currentSample.classification.status);
@@ -119,11 +155,15 @@ function compareEvaluationToBaseline(currentEvaluation, baseline) {
     const shouldCreateBugChange = compareCorrectness(baselineSample.shouldCreateBugCorrect, currentSample.shouldCreateBug.correct);
     const fabricatedEvidenceChange = compareFabricatedEvidence(baselineSample.fabricatedEvidence, currentSample.quality.fabricatedEvidence);
 
-    for (const change of [classificationChange, shouldRetryChange, shouldCreateBugChange, fabricatedEvidenceChange]) {
-      if (change === "regression") regressions += 1;
-      else if (change === "improvement") improvements += 1;
-      else if (change === "informational") informational += 1;
-      else unchanged += 1;
+    // Roadmap #12: rootCause/evidence/recommendedFix, per sample, using the
+    // same fail<partial<pass ordering as correlation quality elsewhere.
+    const qualitativeChanges = {};
+    for (const dimension of QUALITATIVE_DIMENSIONS) {
+      qualitativeChanges[dimension] = compareQualityTernary(baselineSample[dimension], currentSample.quality[dimension]);
+    }
+
+    for (const change of [classificationChange, shouldRetryChange, shouldCreateBugChange, fabricatedEvidenceChange, ...Object.values(qualitativeChanges)]) {
+      tally(change);
     }
 
     samples.push({
@@ -147,6 +187,21 @@ function compareEvaluationToBaseline(currentEvaluation, baseline) {
         baseline: baselineSample.fabricatedEvidence,
         current: currentSample.quality.fabricatedEvidence,
         change: fabricatedEvidenceChange,
+      },
+      rootCause: {
+        baseline: baselineSample.rootCause,
+        current: currentSample.quality.rootCause,
+        change: qualitativeChanges.rootCause,
+      },
+      evidence: {
+        baseline: baselineSample.evidence,
+        current: currentSample.quality.evidence,
+        change: qualitativeChanges.evidence,
+      },
+      recommendedFix: {
+        baseline: baselineSample.recommendedFix,
+        current: currentSample.quality.recommendedFix,
+        change: qualitativeChanges.recommendedFix,
       },
     });
   }
@@ -180,7 +235,7 @@ function formatRegressionReport(comparison) {
   const ambiguousIds = [];
 
   for (const sample of comparison.samples) {
-    for (const dimension of ["classification", "shouldRetry", "shouldCreateBug", "fabricatedEvidence"]) {
+    for (const dimension of ["classification", "shouldRetry", "shouldCreateBug", "fabricatedEvidence", "rootCause", "evidence", "recommendedFix"]) {
       const change = sample[dimension].change;
       if (change === "regression") regressionDetails.push(`${sample.id} ${dimension}`);
       if (change === "improvement") improvementDetails.push(`${sample.id} ${dimension}`);
@@ -196,6 +251,20 @@ function formatRegressionReport(comparison) {
     }
     if (sample.fabricatedEvidence.change === "unchanged" && sample.fabricatedEvidence.baseline === true) {
       knownDeficiencies.push(`${sample.id} fabricatedEvidence`);
+    }
+    // Roadmap #12: same "unchanged and already at the worst state" known-
+    // deficiency convention as classification (baseline === "fail"), not
+    // "partial" - a partial baseline was never flagged as a deficiency for
+    // any existing dimension either, so this stays consistent rather than
+    // inventing a new threshold.
+    if (sample.rootCause.change === "unchanged" && sample.rootCause.baseline === "fail") {
+      knownDeficiencies.push(`${sample.id} rootCause`);
+    }
+    if (sample.evidence.change === "unchanged" && sample.evidence.baseline === "fail") {
+      knownDeficiencies.push(`${sample.id} evidence`);
+    }
+    if (sample.recommendedFix.change === "unchanged" && sample.recommendedFix.baseline === "fail") {
+      knownDeficiencies.push(`${sample.id} recommendedFix`);
     }
     if (sample.classification.baseline === "ambiguous" || sample.classification.current === "ambiguous") {
       ambiguousIds.push(sample.id);

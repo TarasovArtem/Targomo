@@ -28,6 +28,9 @@ function makeValidBaseline(overrides = {}) {
         shouldRetryCorrect: true,
         shouldCreateBugCorrect: true,
         fabricatedEvidence: false,
+        rootCause: "pass",
+        evidence: "pass",
+        recommendedFix: "pass",
         correlationConstruction: "not_applicable",
         correlationTransport: "not_applicable",
         correlationReasoning: "not_applicable",
@@ -74,6 +77,9 @@ test("Experiment #41's frozen baseline state matches the curated Experiment #41 
   assert.equal(exp41.shouldRetryCorrect, true);
   assert.equal(exp41.shouldCreateBugCorrect, true);
   assert.equal(exp41.fabricatedEvidence, true);
+  assert.equal(exp41.rootCause, "fail");
+  assert.equal(exp41.evidence, "fail");
+  assert.equal(exp41.recommendedFix, "partial");
   assert.equal(exp41.correlationConstruction, "pass");
   assert.equal(exp41.correlationTransport, "pass");
   assert.equal(exp41.correlationReasoning, "fail");
@@ -130,6 +136,33 @@ test("a missing fabricatedEvidence fails validation", () => {
   const result = validateBaselineV3(baseline);
   assert.equal(result.valid, false);
   assert.ok(result.errors.some((e) => e.includes("fabricatedEvidence")));
+});
+
+test("an invalid rootCause state fails validation", () => {
+  const baseline = makeValidBaseline({
+    samples: { "sample-1": { ...makeValidBaseline().samples["sample-1"], rootCause: "kinda" } },
+  });
+  const result = validateBaselineV3(baseline);
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("rootCause")));
+});
+
+test("an invalid evidence state fails validation", () => {
+  const baseline = makeValidBaseline({
+    samples: { "sample-1": { ...makeValidBaseline().samples["sample-1"], evidence: "kinda" } },
+  });
+  const result = validateBaselineV3(baseline);
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("evidence")));
+});
+
+test("an invalid recommendedFix state fails validation", () => {
+  const baseline = makeValidBaseline({
+    samples: { "sample-1": { ...makeValidBaseline().samples["sample-1"], recommendedFix: "kinda" } },
+  });
+  const result = validateBaselineV3(baseline);
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("recommendedFix")));
 });
 
 test("an invalid fabricatedEvidence boolean fails validation", () => {

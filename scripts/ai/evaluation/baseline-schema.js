@@ -4,8 +4,12 @@
  *
  * The baseline deliberately does NOT duplicate Dataset v1 - it only records
  * the evaluation *status* each sample had when the baseline was frozen
- * (classificationStatus/shouldRetryCorrect/shouldCreateBugCorrect), which is
- * all regression.js needs to detect per-sample drift later.
+ * (classificationStatus/shouldRetryCorrect/shouldCreateBugCorrect/
+ * fabricatedEvidence/rootCause/evidence/recommendedFix), which is all
+ * regression.js needs to detect per-sample drift later. rootCause/evidence/
+ * recommendedFix (Roadmap #12) are mechanically copied from Dataset v1's own
+ * curated quality fields when the baseline is (re)frozen - never recurated
+ * here, same discipline as every other baseline field.
  *
  * Samples are keyed by ID in a plain object rather than an array, so
  * uniqueness is enforced for free by JavaScript object semantics - no
@@ -20,6 +24,7 @@
 const SUPPORTED_VERSIONS = [1];
 
 const CLASSIFICATION_STATUS_VALUES = ["pass", "fail", "ambiguous"];
+const QUALITY_TERNARY_VALUES = ["pass", "partial", "fail", "not_applicable"];
 
 function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -75,9 +80,18 @@ function validateBaseline(baseline) {
     if (!isBoolean(sample.fabricatedEvidence)) {
       errors.push(`${path}.fabricatedEvidence: must be a boolean`);
     }
+    if (!QUALITY_TERNARY_VALUES.includes(sample.rootCause)) {
+      errors.push(`${path}.rootCause: must be one of ${QUALITY_TERNARY_VALUES.join(", ")}`);
+    }
+    if (!QUALITY_TERNARY_VALUES.includes(sample.evidence)) {
+      errors.push(`${path}.evidence: must be one of ${QUALITY_TERNARY_VALUES.join(", ")}`);
+    }
+    if (!QUALITY_TERNARY_VALUES.includes(sample.recommendedFix)) {
+      errors.push(`${path}.recommendedFix: must be one of ${QUALITY_TERNARY_VALUES.join(", ")}`);
+    }
   }
 
   return { valid: errors.length === 0, errors };
 }
 
-module.exports = { validateBaseline, CLASSIFICATION_STATUS_VALUES };
+module.exports = { validateBaseline, CLASSIFICATION_STATUS_VALUES, QUALITY_TERNARY_VALUES };

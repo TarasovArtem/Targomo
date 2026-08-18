@@ -5,7 +5,10 @@
  * Separate from baseline-schema.js (Baseline v1) - v1 stays untouched. Same
  * "do not duplicate the whole dataset, only freeze the evaluation status"
  * design as v1, extended with three new per-sample correlation quality
- * fields (construction/transport/reasoning). Sample-set parity against the
+ * fields (construction/transport/reasoning) and, per Roadmap #12, three
+ * qualitative fields (rootCause/evidence/recommendedFix) mechanically
+ * copied from Dataset v2's own curated quality fields - never recurated
+ * here. Sample-set parity against the
  * current dataset is deliberately NOT checked here - that is
  * regression-v2.js's responsibility (compareEvaluationToBaselineV2()),
  * keeping "is this baseline file well-formed" separate from "does this
@@ -20,7 +23,13 @@
 const SUPPORTED_VERSIONS = [1];
 
 const CLASSIFICATION_STATUS_VALUES = ["pass", "fail", "ambiguous"];
+// Same four-value ternary enum used for both the correlation-quality fields
+// and the (Roadmap #12) rootCause/evidence/recommendedFix fields - one
+// constant, two names, so each call site still reads as "what kind of value
+// is this" rather than forcing every reader back to the correlation-specific
+// name for fields that have nothing to do with correlation.
 const CORRELATION_QUALITY_VALUES = ["pass", "partial", "fail", "not_applicable"];
+const QUALITY_TERNARY_VALUES = CORRELATION_QUALITY_VALUES;
 
 function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -76,6 +85,15 @@ function validateBaselineV2(baseline) {
     if (!isBoolean(sample.fabricatedEvidence)) {
       errors.push(`${path}.fabricatedEvidence: must be a boolean`);
     }
+    if (!QUALITY_TERNARY_VALUES.includes(sample.rootCause)) {
+      errors.push(`${path}.rootCause: must be one of ${QUALITY_TERNARY_VALUES.join(", ")}`);
+    }
+    if (!QUALITY_TERNARY_VALUES.includes(sample.evidence)) {
+      errors.push(`${path}.evidence: must be one of ${QUALITY_TERNARY_VALUES.join(", ")}`);
+    }
+    if (!QUALITY_TERNARY_VALUES.includes(sample.recommendedFix)) {
+      errors.push(`${path}.recommendedFix: must be one of ${QUALITY_TERNARY_VALUES.join(", ")}`);
+    }
     if (!CORRELATION_QUALITY_VALUES.includes(sample.correlationConstruction)) {
       errors.push(`${path}.correlationConstruction: must be one of ${CORRELATION_QUALITY_VALUES.join(", ")}`);
     }
@@ -90,4 +108,4 @@ function validateBaselineV2(baseline) {
   return { valid: errors.length === 0, errors };
 }
 
-module.exports = { validateBaselineV2, CLASSIFICATION_STATUS_VALUES, CORRELATION_QUALITY_VALUES };
+module.exports = { validateBaselineV2, CLASSIFICATION_STATUS_VALUES, CORRELATION_QUALITY_VALUES, QUALITY_TERNARY_VALUES };

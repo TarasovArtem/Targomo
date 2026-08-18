@@ -13,12 +13,17 @@
  * primitives, not a shared refactor" trade-off already used throughout this
  * directory.
  *
- * Known limitation (unchanged from v1/v2, not something this file
- * introduces or fixes): rootCause/evidence/recommendedFix are aggregated in
- * scoring but are NOT individually per-sample regression-protected here -
- * only classification/shouldRetry/shouldCreateBug/fabricatedEvidence/
- * correlation* are. A future sample where rootCause silently flips from
- * "pass" to "fail" would not, by itself, flip this comparator's status.
+ * Roadmap #12 closed the previous known limitation: rootCause/evidence/
+ * recommendedFix are now individually per-sample regression-protected here
+ * too, via the same compareQualityTernary() ordering already used for
+ * correlation quality (fail < partial < pass, not_applicable outside that
+ * ordering). All ten dimensions - classification/shouldRetry/
+ * shouldCreateBug/fabricatedEvidence/rootCause/evidence/recommendedFix/
+ * correlationConstruction/correlationTransport/correlationReasoning - follow
+ * the same "any regression anywhere wins" precedence: a sample where
+ * rootCause silently flips from "pass" to "fail" now flips this
+ * comparator's status to REGRESSED by itself, even if every other dimension
+ * on every other sample improved.
  */
 
 "use strict";
@@ -35,6 +40,10 @@ const DEFAULT_BASELINE_PATH = path.join(__dirname, "baseline-v3.json");
 
 const QUALITY_RANK = { fail: 0, partial: 1, pass: 2 };
 const CORRELATION_DIMENSIONS = ["correlationConstruction", "correlationTransport", "correlationReasoning"];
+// Roadmap #12: rootCause/evidence/recommendedFix use the identical
+// fail<partial<pass ordering as the correlation dimensions above, via the
+// same compareQualityTernary() comparator - reused as-is, not duplicated.
+const QUALITATIVE_DIMENSIONS = ["rootCause", "evidence", "recommendedFix"];
 
 function toBaselineClassificationStatus(scoringStatus) {
   if (scoringStatus === "correct") return "pass";
@@ -129,7 +138,20 @@ function compareEvaluationToBaselineV3(currentEvaluation, baseline) {
       correlationChanges[dimension] = compareQualityTernary(baselineSample[dimension], currentSample.quality[dimension]);
     }
 
-    for (const change of [classificationChange, shouldRetryChange, shouldCreateBugChange, fabricatedEvidenceChange, ...Object.values(correlationChanges)]) {
+    // Roadmap #12: rootCause/evidence/recommendedFix, per sample.
+    const qualitativeChanges = {};
+    for (const dimension of QUALITATIVE_DIMENSIONS) {
+      qualitativeChanges[dimension] = compareQualityTernary(baselineSample[dimension], currentSample.quality[dimension]);
+    }
+
+    for (const change of [
+      classificationChange,
+      shouldRetryChange,
+      shouldCreateBugChange,
+      fabricatedEvidenceChange,
+      ...Object.values(correlationChanges),
+      ...Object.values(qualitativeChanges),
+    ]) {
       tally(change);
     }
 
@@ -154,6 +176,21 @@ function compareEvaluationToBaselineV3(currentEvaluation, baseline) {
         baseline: baselineSample.fabricatedEvidence,
         current: currentSample.quality.fabricatedEvidence,
         change: fabricatedEvidenceChange,
+      },
+      rootCause: {
+        baseline: baselineSample.rootCause,
+        current: currentSample.quality.rootCause,
+        change: qualitativeChanges.rootCause,
+      },
+      evidence: {
+        baseline: baselineSample.evidence,
+        current: currentSample.quality.evidence,
+        change: qualitativeChanges.evidence,
+      },
+      recommendedFix: {
+        baseline: baselineSample.recommendedFix,
+        current: currentSample.quality.recommendedFix,
+        change: qualitativeChanges.recommendedFix,
       },
       correlationConstruction: {
         baseline: baselineSample.correlationConstruction,
@@ -201,6 +238,9 @@ function formatRegressionReportV3(comparison) {
     "shouldRetry",
     "shouldCreateBug",
     "fabricatedEvidence",
+    "rootCause",
+    "evidence",
+    "recommendedFix",
     "correlationConstruction",
     "correlationTransport",
     "correlationReasoning",
@@ -228,6 +268,17 @@ function formatRegressionReportV3(comparison) {
     }
     if (sample.fabricatedEvidence.change === "unchanged" && sample.fabricatedEvidence.baseline === true) {
       knownDeficiencies.push(`${sample.id} fabricatedEvidence`);
+    }
+    // Roadmap #12: same "unchanged and already at the worst state" known-
+    // deficiency convention as classification (baseline === "fail").
+    if (sample.rootCause.change === "unchanged" && sample.rootCause.baseline === "fail") {
+      knownDeficiencies.push(`${sample.id} rootCause`);
+    }
+    if (sample.evidence.change === "unchanged" && sample.evidence.baseline === "fail") {
+      knownDeficiencies.push(`${sample.id} evidence`);
+    }
+    if (sample.recommendedFix.change === "unchanged" && sample.recommendedFix.baseline === "fail") {
+      knownDeficiencies.push(`${sample.id} recommendedFix`);
     }
     if (sample.classification.baseline === "ambiguous" || sample.classification.current === "ambiguous") {
       ambiguousIds.push(sample.id);
