@@ -320,6 +320,26 @@ This phase does not change the production prompt, provider, application policy, 
 
 This phase does not change the production prompt, provider, application policy, Cypress, or Dataset v1/v2/Baseline v1/v2 in any way. Dataset v3/Baseline v3 are **not** part of GitHub Actions in this phase - `QA Agent evaluation` still runs only the v1/v2 commands; a v3 CI rollout (mirroring Roadmap #7's v2 rollout) is a separate, future change.
 
+### Evidence Grounding Prompt Improvement (Roadmap #11)
+
+**Status: IMPLEMENTED / READY FOR LIVE VALIDATION.** The production prompt (`scripts/ai/qa-agent-prompt.js`) now distinguishes, inside every free-text field it asks the model to write (not only the `evidence` array), three epistemic states:
+
+- an **observed fact** - something the supplied evidence (current-run error/assertion text, source code, deterministic `browserCorrelation` fields, history, or other explicitly supplied context) directly establishes;
+- a **supported inference** - a reasonable conclusion that goes beyond what is directly observed but stays grounded in and consistent with the evidence available; allowed, but must never be stated as if it were an observed fact;
+- **unknown / not established** - a specific mechanism the evidence doesn't let the model pin down; the model is explicitly told to say so plainly rather than inventing a plausible-sounding cause merely because it would explain the symptoms.
+
+**High-level classification confidence is independent from mechanism confidence.** The rule states directly that a confident, well-evidenced classification never needs an unproven mechanism to support it, and never licenses inventing one - the model's certainty about *what* happened and its certainty about *why* it happened in mechanistic detail are treated as independent, and the prompt explicitly says lowering the first is never required just because the second is unresolved.
+
+This is additive to, not a rewrite of, the existing rules:
+
+- **Correlation stays evidence, not causal proof** - `browserCorrelation`'s existing true/false/null semantics (rule 10) are untouched; the new rule only adds that a signature comparison result is never automatic proof of *why* signatures differ, and the model must not invent a browser-specific mechanism merely because they do.
+- **History still cannot manufacture a current-run fact** - rule 8 is untouched; the new rule reaffirms that history may weigh a hypothesis but can never stand in for evidence the current run doesn't actually provide.
+- **`recommendedFix` stays within the same evidence boundary** - if the exact mechanism is unknown, the model may recommend a diagnostic next step, a fix grounded only in what was actually established, or state what additional evidence would be needed - never a fix premised on an unproven cause, and rule 4's prohibition on arbitrary waits/weakened assertions still applies.
+
+No output-schema change was required or made - `rootCause`/`evidence`/`recommendedFix` keep their existing shape; this is a prompt-contract change to what may be *said* inside those fields, not a new field.
+
+**This has not yet been behaviorally validated against a live model.** Dataset v3 and Baseline v3 are intentionally untouched by this phase - `experiment-41-correlation-necessary-grounding` still records its frozen historical `fabricatedEvidence = true` / `rootCause = fail` / `evidence = fail` / `recommendedFix = partial` / `correlationReasoning = fail` finding, exactly as before. `npm run eval:ai:v3`/`npm run eval:regression:v3` therefore still report `Status: UNCHANGED`, with that sample still listed as a known deficiency - this is expected, not a sign the prompt change had no effect. The evaluator scores stored historical output; it never calls a live model. A separate, later, controlled live re-validation is required to measure any actual behavioral effect.
+
 ### Roadmap
 
 **Done:**
@@ -338,11 +358,12 @@ This phase does not change the production prompt, provider, application policy, 
 - Correlation reasoning prompt contract improvement, Phase 1 (Roadmap #8) - see [above](#correlation-reasoning-prompt-improvement-roadmap-8); a prompt-only change, not yet behaviorally validated against a live model
 - Evidence Grounding Evaluation Protection (Roadmap #9) - see [above](#evidence-grounding-evaluation-protection-roadmap-9); activates the existing `fabricatedEvidence` signal in v1/v2 scoring and regression, evaluation-only, no production behavior change
 - Evidence Grounding Dataset Expansion (Roadmap #10) - see [above](#evidence-grounding-dataset-expansion-roadmap-10); additive Dataset v3/Baseline v3 (Dataset v2's six samples + the grounding sample), `fabricatedEvidence = true` frozen as a known deficiency, not in CI yet
+- Evidence Grounding Prompt Improvement, Phase 1 (Roadmap #11) - see [above](#evidence-grounding-prompt-improvement-roadmap-11); status: **implemented / ready for live validation** - a minimal, generic claim-level grounding contract (observed fact / supported inference / unknown-not-established), not yet behaviorally validated against a live model
 
 **Next:**
 
 - Controlled Correlation Re-validation (Roadmap #8, Phases 2-3) - reproduce a same-signature and a different-signature multi-browser failure against the improved prompt with real Groq calls, compare against the historical Baseline v2 findings, and only then update Dataset v2/Baseline v2 with real evidence (target: move `correlationReasoning` from `partial` to `pass` on Scenario A/B without regressing classification/action safety anywhere else)
-- Evidence Grounding Prompt Improvement (Roadmap #11) - a minimal claim-level grounding contract so the model can preserve a well-supported top-level classification while explicitly hedging or labeling unsupported lower-level details instead of presenting them as observed facts, then a new controlled live re-validation against the Experiment #41 scenario measured against Dataset v3/Baseline v3
+- Controlled Evidence Grounding Re-validation (Roadmap #11, Phase 2) - reproduce a correlation-necessary, different-signature multi-browser failure against the improved grounding prompt with a real Groq call, compare the live result against the historical `experiment-41-correlation-necessary-grounding` finding, and only then update Dataset v3/Baseline v3 with real evidence (target: move `fabricatedEvidence` from `true` to `false` without regressing classification/action safety/correlation reasoning/rootCause/evidence/recommendedFix quality anywhere else)
 
 **Planned / future work** (not implemented yet):
 
