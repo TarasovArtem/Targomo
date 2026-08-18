@@ -73,7 +73,7 @@ GitHub Actions ([.github/workflows/cypress.yml](.github/workflows/cypress.yml)) 
 - pull requests targeting `main`
 - manual workflow execution (`workflow_dispatch`)
 
-Four independent jobs run per workflow trigger:
+Five independent jobs run per workflow trigger:
 
 ```
                          ┌──────────────────┐
@@ -87,11 +87,13 @@ PR / push
    │                  ├─ eval:ai
    │                  └─ eval:regression
    │
-   └→ Cypress matrix
-        │
-        ├─ Chrome ─┐
-        │          │
-        └─ Edge ───┤
+   ├→ Cypress matrix (container)
+   │    │
+   │    ├─ Chrome ─┐
+   │    │          │
+   │    └─ Edge ───┤
+   │               │
+   └→ Cypress - firefox (bare runner) ─┘
                    ↓
            Browser aggregation
                    ↓
@@ -106,10 +108,11 @@ PR / push
 
 - **Unit tests** - pure-JS tests for `scripts/ai/` (provider contract, prompt building, aggregation, evaluation/regression logic, etc. - see `npm run test:unit`). No browser, no network, no secrets.
 - **QA Agent evaluation** - runs `npm run eval:ai` and `npm run eval:regression` against the offline Evaluation Dataset/Baseline (see [Evaluation infrastructure](#evaluation-infrastructure) below). Fully offline, no AI provider calls. **Informational only** - see that section for what that means.
-- **Cypress matrix** - runs the E2E suite against the live app in Chrome and Edge, in parallel (Firefox is excluded from CI due to a known Firefox-in-Docker launch issue; run it locally with `npm run firefox`). Uploads screenshots for failed runs, videos, and (on failure) the structured test report as workflow artifacts. This job's own pass/fail is the suite's authoritative result - nothing downstream (aggregation, AI analysis) can turn a failed Cypress run green.
-- **QA AI triage** - runs after the Cypress matrix, at most once per workflow run regardless of how many browsers failed (see [QA Agent](#qa-agent-ai-failure-analysis) below).
+- **Cypress matrix (Chrome/Edge)** - runs the E2E suite against the live app in Chrome and Edge, in parallel, inside a `cypress/included` Docker container (bundles Node/npm/browsers matching the Cypress version in `package.json`). Uploads screenshots for failed runs, videos, and (on failure) the structured test report as workflow artifacts. This job's own pass/fail is the suite's authoritative result - nothing downstream (aggregation, AI analysis) can turn a failed Cypress run green.
+- **Cypress - firefox (Roadmap #14C)** - runs the same, unmodified E2E suite in Firefox, but in a *different execution environment* from Chrome/Edge: directly on the bare `ubuntu-latest` runner (no container), with Firefox installed explicitly via `browser-actions/setup-firefox`. This split exists because Firefox previously hung during WebDriver session creation when run inside the same nested `cypress/included` container Chrome/Edge use - a container-sandboxing limitation of that specific setup (confirmed by a dedicated Roadmap #14B CI spike: the identical suite ran cleanly in ~80s once moved off the nested container), not evidence of a Firefox-specific application or test defect. Produces the same artifact shapes as Chrome/Edge (`cypress-screenshots-firefox`, `cypress-videos-firefox`, `cypress-report-firefox`, `qa-triage-input-firefox`) and the same authoritative-failure semantics - a failed Firefox E2E run fails this job, and nothing downstream can turn it green.
+- **QA AI triage** - runs after Chrome, Edge, *and* Firefox, at most once per workflow run regardless of how many browsers failed (see [QA Agent](#qa-agent-ai-failure-analysis) below). `browserCorrelation` is built from however many browsers actually ran/failed - two or three - using the same deterministic, N-browser-generic comparison either way; a Firefox-only failure reaches this job exactly like a Chrome- or Edge-only failure would.
 
-Required branch-protection checks are `Unit tests`, `Cypress - chrome`, and `Cypress - edge`. `QA Agent evaluation` and `QA AI triage` are informational/diagnostic and are not required.
+Required branch-protection checks are `Unit tests`, `Cypress - chrome`, and `Cypress - edge`. `Cypress - firefox` is deliberately **not required yet** - it is informational only while its real-world CI reliability is observed, exactly like `QA Agent evaluation` and `QA AI triage` already are. `QA Agent evaluation` and `QA AI triage` remain informational/diagnostic.
 
 ### QA Agent (AI failure analysis)
 
@@ -392,12 +395,9 @@ Baseline v4 extends Baseline v3 additively with both new samples frozen at their
 - Evidence Grounding Prompt Improvement, Phase 1 (Roadmap #11) - see [above](#evidence-grounding-prompt-improvement-roadmap-11); status: **implemented / ready for live validation** - a minimal, generic claim-level grounding contract (observed fact / supported inference / unknown-not-established), not yet behaviorally validated against a live model
 - Qualitative Regression Protection (Roadmap #12) - see [above](#qualitative-regression-protection-roadmap-12); `rootCause`/`evidence`/`recommendedFix` are now per-sample regression-protected in Baseline v1/v2/v3, using the same `fail < partial < pass` ordering as correlation quality, evaluation-only, no production behavior change
 - Additive Post-Prompt Evaluation Dataset v4 (Roadmap #13) - see [above](#additive-post-prompt-evaluation-dataset-v4-roadmap-13); status: **implemented / ready for review** - two independent post-prompt controlled re-validations of Experiment #41 stored as separate samples alongside the unmodified pre-prompt historical record, `eval:ai:v4`/`eval:regression:v4` available locally, not yet in CI
+- Browser Matrix Expansion - Firefox (Roadmap #14) - see [Continuous Integration](#continuous-integration) and [QA Agent](#qa-agent-ai-failure-analysis) above; status: **implemented locally / pending CI validation** - a dedicated `Cypress - firefox` job runs the existing, unmodified E2E suite on the bare `ubuntu-latest` runner (Roadmap #14B's proven execution strategy), feeds the same centralized aggregator/triage/single-AI-call pipeline as Chrome/Edge, and is deliberately not yet a required branch-protection check; historical Dataset v1-v4/Baseline v1-v4 are unmodified, since this is production execution coverage, not evaluation recuration
 
 **Next:**
-
-- Browser Matrix Expansion - Firefox (Roadmap #14)
-
-**Then:**
 
 - QA Knowledge / Skills Layer (Roadmap #15)
 

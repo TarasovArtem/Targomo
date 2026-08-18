@@ -217,6 +217,118 @@ test("correlation: an unrecognized browser not in priorityOrder still sorts dete
   assert.deepEqual(correlation.browsers, ["chrome", "edge", "zeta-browser"]);
 });
 
+// --- Roadmap #14C: firefox production integration (3-browser scenarios) --
+// Unlike the pre-existing >2-browser test above (which passes an explicit
+// priorityOrder), these rely on the real, current DEFAULT_BROWSER_PRIORITY
+// (now ["chrome", "edge", "firefox"]) to prove the production default -
+// not just a manually-constructed priority order - already handles three
+// browsers correctly.
+
+test("correlation: chrome+edge+firefox all fail with the same signature -> multi-browser, sameFailureSignature=true", () => {
+  const sharedFailure = { title: "shared failing test", specFile: "cypress/e2e/tests/example.cy.js", message: "AssertionError: same problem" };
+  const inputs = [
+    browserInput("chrome", "failure", { context: fakeContext("chrome", sharedFailure) }),
+    browserInput("edge", "failure", { context: fakeContext("edge", sharedFailure) }),
+    browserInput("firefox", "failure", { context: fakeContext("firefox", sharedFailure) }),
+  ];
+  const { correlation } = aggregateBrowserInputs(inputs);
+
+  assert.deepEqual(correlation.failedBrowsers, ["chrome", "edge", "firefox"]);
+  assert.equal(correlation.failureScope, "multi-browser");
+  assert.equal(correlation.sameFailureSignature, true);
+});
+
+test("correlation: all 3 fail, two share a signature and one differs -> sameFailureSignature=false", () => {
+  const sharedFailure = { title: "shared failing test", specFile: "cypress/e2e/tests/example.cy.js", message: "AssertionError: same problem" };
+  const inputs = [
+    browserInput("chrome", "failure", { context: fakeContext("chrome", sharedFailure) }),
+    browserInput("edge", "failure", { context: fakeContext("edge", sharedFailure) }),
+    browserInput("firefox", "failure", { context: fakeContext("firefox", { title: "different test", message: "AssertionError: different problem" }) }),
+  ];
+  const { correlation } = aggregateBrowserInputs(inputs);
+
+  assert.equal(correlation.failureScope, "multi-browser");
+  assert.equal(correlation.sameFailureSignature, false);
+});
+
+test("correlation: all 3 fail with three different signatures -> sameFailureSignature=false", () => {
+  const inputs = [
+    browserInput("chrome", "failure", { context: fakeContext("chrome", { title: "test A", message: "AssertionError: A" }) }),
+    browserInput("edge", "failure", { context: fakeContext("edge", { title: "test B", message: "AssertionError: B" }) }),
+    browserInput("firefox", "failure", { context: fakeContext("firefox", { title: "test C", message: "AssertionError: C" }) }),
+  ];
+  const { correlation } = aggregateBrowserInputs(inputs);
+
+  assert.equal(correlation.failureScope, "multi-browser");
+  assert.equal(correlation.sameFailureSignature, false);
+});
+
+test("correlation: chrome+firefox fail with the same signature, edge passes -> multi-browser, sameFailureSignature=true", () => {
+  const sharedFailure = { title: "shared failing test", specFile: "cypress/e2e/tests/example.cy.js", message: "AssertionError: same problem" };
+  const inputs = [
+    browserInput("chrome", "failure", { context: fakeContext("chrome", sharedFailure) }),
+    browserInput("edge", "success"),
+    browserInput("firefox", "failure", { context: fakeContext("firefox", sharedFailure) }),
+  ];
+  const { correlation } = aggregateBrowserInputs(inputs);
+
+  assert.deepEqual(correlation.failedBrowsers, ["chrome", "firefox"]);
+  assert.deepEqual(correlation.passedBrowsers, ["edge"]);
+  assert.equal(correlation.failureScope, "multi-browser");
+  assert.equal(correlation.sameFailureSignature, true);
+});
+
+test("correlation: edge+firefox fail with different signatures, chrome passes -> multi-browser, sameFailureSignature=false", () => {
+  const inputs = [
+    browserInput("chrome", "success"),
+    browserInput("edge", "failure", { context: fakeContext("edge", { title: "test A", message: "AssertionError: A" }) }),
+    browserInput("firefox", "failure", { context: fakeContext("firefox", { title: "test B", message: "AssertionError: B" }) }),
+  ];
+  const { correlation } = aggregateBrowserInputs(inputs);
+
+  assert.deepEqual(correlation.failedBrowsers, ["edge", "firefox"]);
+  assert.deepEqual(correlation.passedBrowsers, ["chrome"]);
+  assert.equal(correlation.failureScope, "multi-browser");
+  assert.equal(correlation.sameFailureSignature, false);
+});
+
+test("correlation: firefox only fails -> primaryBrowser=firefox, single-browser, sameFailureSignature=null", () => {
+  const inputs = [
+    browserInput("chrome", "success"),
+    browserInput("edge", "success"),
+    browserInput("firefox", "failure"),
+  ];
+  const { primary, correlation } = aggregateBrowserInputs(inputs);
+
+  assert.equal(primary.browser, "firefox");
+  assert.equal(correlation.primaryBrowser, "firefox");
+  assert.deepEqual(correlation.failedBrowsers, ["firefox"]);
+  assert.deepEqual(correlation.passedBrowsers, ["chrome", "edge"]);
+  assert.equal(correlation.failureScope, "single-browser");
+  // Fewer than two failed browsers - nothing to compare.
+  assert.equal(correlation.sameFailureSignature, null);
+});
+
+test("aggregateBrowserInputs: chrome+edge+firefox all pass -> shouldRun false, correlation null", () => {
+  const inputs = [browserInput("chrome", "success"), browserInput("edge", "success"), browserInput("firefox", "success")];
+  const result = aggregateBrowserInputs(inputs);
+  assert.deepEqual(result, { shouldRun: false, primary: null, otherFailedBrowsers: [], correlation: null });
+});
+
+test("aggregateBrowserInputs: primaryBrowser is deterministic across repeated calls with three browsers failing", () => {
+  const sharedFailure = { title: "shared failing test", specFile: "cypress/e2e/tests/example.cy.js", message: "AssertionError: same problem" };
+  const inputs = [
+    browserInput("chrome", "failure", { context: fakeContext("chrome", sharedFailure) }),
+    browserInput("edge", "failure", { context: fakeContext("edge", sharedFailure) }),
+    browserInput("firefox", "failure", { context: fakeContext("firefox", sharedFailure) }),
+  ];
+  const first = aggregateBrowserInputs(inputs);
+  const second = aggregateBrowserInputs(inputs);
+  assert.equal(first.primary.browser, "chrome");
+  assert.equal(first.primary.browser, second.primary.browser);
+  assert.deepEqual(first.correlation, second.correlation);
+});
+
 // --- readBrowserInputs (I/O layer, isolated from the repo's own reports/) --
 
 function withTempDir(fn) {
@@ -282,6 +394,47 @@ test("readBrowserInputs: a browser input with no context.json (e.g. it actually 
   });
 });
 
+// CRITICAL (Roadmap #14C): every other test above either passes an
+// explicit browsers/priorityOrder array to readBrowserInputs()/
+// aggregateBrowserInputs(), or hand-builds a browserInputs array directly -
+// none of them exercise the actual production entry point, main() calling
+// readBrowserInputs() with NO arguments at all (relying purely on the
+// DEFAULT_BROWSER_PRIORITY default parameter). Before Roadmap #14C, that
+// default was ["chrome", "edge"] - a firefox directory would have been
+// silently invisible to this exact call shape even if every other part of
+// the aggregator logic were correct. This test proves the real default
+// argument, not just the manually-passed one, now actually discovers a
+// firefox artifact directory.
+test("readBrowserInputs: called with NO explicit browser list (the real production default path) still discovers a firefox directory", () => {
+  withTempDir((dir) => {
+    const firefoxDir = path.join(dir, "firefox");
+    fs.mkdirSync(firefoxDir, { recursive: true });
+    fs.writeFileSync(path.join(firefoxDir, "browser-result.json"), JSON.stringify({ browser: "firefox", outcome: "failure" }));
+    fs.writeFileSync(path.join(firefoxDir, "context.json"), JSON.stringify(fakeContext("firefox")));
+
+    // No second argument - this is the exact call shape main() actually
+    // uses, relying entirely on DEFAULT_BROWSER_PRIORITY.
+    const inputs = readBrowserInputs(dir);
+    const firefoxInput = inputs.find((i) => i.browser === "firefox");
+    assert.ok(firefoxInput, "readBrowserInputs() with no explicit browser list must discover firefox via DEFAULT_BROWSER_PRIORITY");
+    assert.equal(firefoxInput.outcome, "failure");
+    assert.ok(firefoxInput.context);
+  });
+});
+
+test("readBrowserInputs: called with NO explicit browser list discovers all of chrome, edge, and firefox together", () => {
+  withTempDir((dir) => {
+    for (const browser of ["chrome", "edge", "firefox"]) {
+      const browserDir = path.join(dir, browser);
+      fs.mkdirSync(browserDir, { recursive: true });
+      fs.writeFileSync(path.join(browserDir, "browser-result.json"), JSON.stringify({ browser, outcome: "success" }));
+    }
+
+    const inputs = readBrowserInputs(dir);
+    assert.deepEqual(inputs.map((i) => i.browser).sort(), ["chrome", "edge", "firefox"]);
+  });
+});
+
 // --- integration: the actual Definition-of-Done claim -------------------
 // Proves "two failed browsers -> exactly one provider.analyze() call"
 // using the real aggregation decision plus the real buildFailureReport()
@@ -325,6 +478,49 @@ test("integration: two failed browser inputs still result in exactly one provide
   assert.deepEqual(validateAnalysisItem(report.results[0], 0), []);
   // Only the primary (chrome) failure was actually analyzed - edge's
   // failure never reached the provider at all, by construction.
+  assert.equal(report.sourceContext.browser, "chrome");
+});
+
+// Roadmap #14C: same invariant, now with three failed browsers (chrome,
+// edge, firefox) - proves the single-call guarantee still holds when a
+// third browser is added, not just for the original two.
+test("integration: three failed browser inputs (chrome, edge, firefox) still result in exactly one provider.analyze() call", async () => {
+  const browserInputs = [browserInput("chrome", "failure"), browserInput("edge", "failure"), browserInput("firefox", "failure")];
+  const { shouldRun, primary, otherFailedBrowsers } = aggregateBrowserInputs(browserInputs);
+
+  assert.equal(shouldRun, true);
+  assert.equal(primary.browser, "chrome");
+  assert.deepEqual(otherFailedBrowsers, ["edge", "firefox"]);
+
+  let analyzeCalls = 0;
+  const countingProvider = {
+    name: "mock",
+    analyze: async () => {
+      analyzeCalls += 1;
+      return JSON.stringify({
+        results: [
+          {
+            test: { title: primary.context.failedTests[0].title, specFile: primary.context.failedTests[0].specFile },
+            classification: "TEST_BUG",
+            confidence: 0.9,
+            summary: "Summary.",
+            rootCause: "Root cause.",
+            evidence: ["evidence"],
+            recommendedFix: { file: null, description: "Fix it." },
+            shouldCreateBug: false,
+            shouldRetry: false,
+          },
+        ],
+      });
+    },
+  };
+
+  const report = await buildFailureReport(primary.context, { provider: countingProvider, history: null });
+
+  assert.equal(analyzeCalls, 1, "provider.analyze() must be called exactly once even with three browsers failing");
+  assert.deepEqual(validateAnalysisItem(report.results[0], 0), []);
+  // Only the primary (chrome) failure was actually analyzed - edge's and
+  // firefox's failures never reached the provider at all, by construction.
   assert.equal(report.sourceContext.browser, "chrome");
 });
 

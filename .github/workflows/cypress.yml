@@ -245,26 +245,172 @@ jobs:
           echo "Cypress E2E tests failed for browser '${{ matrix.browser }}'. See the report/screenshot/video artifacts (and QA AI triage, if it runs) for details."
           exit 1
 
-  # Runs downstream of the full Cypress matrix, at most once per workflow
-  # run - the whole point of this job existing (see PR #23) is that a
-  # failure appearing in both chrome and edge must trigger exactly one
-  # real Groq request, not one per browser. `if: always()` is required
-  # here: GitHub Actions skips a downstream `needs:` job by default once
-  # any dependency job fails, and AI triage specifically needs to run
-  # *especially* when Cypress failed - so this job must always get the
-  # chance to start. The actual "is there anything worth analyzing"
-  # decision is made inside the job (aggregate-browser-context.js's
-  # shouldRunAiTriage()), never by this `if:` condition, and never by an
-  # LLM - it's a plain boolean over Cypress's own recorded outcomes.
+  # Firefox (Roadmap #14C), deliberately its own job rather than a third
+  # matrix.browser entry above: Firefox reliably hung during WebDriver
+  # session creation inside the cypress-tests job's nested
+  # cypress/included Docker container (see that job's matrix comment) -
+  # not an application/test defect, a container-sandboxing limitation
+  # specific to that execution environment. Roadmap #14B's CI spike
+  # (PR #49) proved the fix is environmental, not architectural: running
+  # directly on the bare ubuntu-latest runner, with Firefox installed
+  # explicitly rather than bundled in a container, executes the exact
+  # same unmodified test suite successfully (10/10 passing, ~80s total,
+  # no hang). Chrome/Edge above are intentionally left on their proven
+  # container-based setup - there is no evidence requiring all three
+  # browsers to share one execution environment, and changing a setup
+  # that already works would be pure, unproven risk.
+  #
+  # Every step below mirrors cypress-tests' own diagnostics/artifacts/
+  # failure-semantics exactly (same artifact names via the "-firefox"
+  # suffix, same continue-on-error/steps.run_tests.outcome contract, same
+  # "Fail job on E2E failure" gate) so the downstream aggregator and QA AI
+  # triage job need zero awareness that this leg's execution environment
+  # differs from chrome/edge's.
+  firefox-tests:
+    name: Cypress - firefox
+    runs-on: ubuntu-latest
+    # Same permissions as cypress-tests, for the same reasons: contents:
+    # read for checkout, actions: read for "Collect run history for
+    # flaky-test reasoning" below.
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # cypress-tests doesn't need this step - cypress/included bundles
+      # Node/npm already. This job runs on the bare runner, so it needs
+      # its own Node setup, identical to unit-tests/qa-agent-evaluation/
+      # qa-ai-triage above.
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The one step this job has that no other job needs: cypress/included
+      # bundles Firefox for chrome/edge's container; this job installs it
+      # explicitly on the bare runner instead, exactly as proven in the
+      # Roadmap #14B spike. "latest" mirrors the spike's own proven choice
+      # rather than introducing a new, untested version-pinning policy.
+      - name: Set up Firefox
+        uses: browser-actions/setup-firefox@v1
+        with:
+          firefox-version: latest
+
+      # Identical contract to cypress-tests' own "Run Cypress E2E tests"
+      # step: continue-on-error lets the job carry on into the diagnostics
+      # steps below instead of stopping here; steps.run_tests.outcome (not
+      # affected by continue-on-error, which only overrides .conclusion)
+      # is what "Fail job on E2E failure" below actually checks. No spec
+      # filtering, no Firefox-specific flags - this is the exact same
+      # "firefox" script chrome/edge's own npm run ${{ matrix.browser }}
+      # would use if it were still in that matrix.
+      - name: Run Cypress E2E tests (firefox)
+        id: run_tests
+        continue-on-error: true
+        run: npm run firefox
+
+      # Everything below this point is additive diagnostics, identical in
+      # spirit to cypress-tests' own copy - none of it can turn a failed
+      # E2E run into a passing job.
+
+      - name: Record browser result
+        if: always()
+        run: |
+          mkdir -p reports/ai
+          printf '{"browser": "firefox", "outcome": "%s"}' "${{ steps.run_tests.outcome }}" > reports/ai/browser-result.json
+
+      - name: Collect structured failure context
+        if: steps.run_tests.outcome == 'failure'
+        env:
+          TEST_BROWSER: firefox
+        run: npm run ai:collect
+
+      - name: Collect run history for flaky-test reasoning
+        if: steps.run_tests.outcome == 'failure'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TEST_BROWSER: firefox
+        run: npm run ai:history
+
+      - name: Upload Cypress screenshots
+        if: steps.run_tests.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: cypress-screenshots-firefox
+          path: cypress/screenshots
+          if-no-files-found: ignore
+
+      - name: Upload Cypress videos
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cypress-videos-firefox
+          path: cypress/videos
+          if-no-files-found: ignore
+
+      - name: Upload structured test report
+        if: steps.run_tests.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: cypress-report-firefox
+          path: reports/cypress
+          if-no-files-found: ignore
+
+      # Same "browser-scoped input for the downstream QA AI triage job"
+      # contract as cypress-tests' own copy - qa-triage-input-firefox can
+      # never collide with -chrome/-edge, and its presence/absence is
+      # exactly what aggregate-browser-context.js's readBrowserInputs()
+      # already knows how to handle for any browser in its list.
+      - name: Upload QA triage input
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: qa-triage-input-firefox
+          path: reports/ai
+          if-no-files-found: ignore
+
+      # Identical gate to cypress-tests' own copy: the sole source of
+      # truth for this job's conclusion, depending only on the original
+      # test outcome - never on diagnostics collection or the downstream
+      # AI triage job.
+      - name: Fail job on E2E failure
+        if: steps.run_tests.outcome == 'failure'
+        run: |
+          echo "Cypress E2E tests failed for browser 'firefox'. See the report/screenshot/video artifacts (and QA AI triage, if it runs) for details."
+          exit 1
+
+  # Runs downstream of the full Cypress matrix (chrome, edge, and - since
+  # Roadmap #14C - firefox), at most once per workflow run - the whole
+  # point of this job existing (see PR #23) is that a failure appearing in
+  # more than one browser must trigger exactly one real Groq request, not
+  # one per browser. `needs: [cypress-tests, firefox-tests]` is required
+  # for the same reason it was required for chrome/edge alone: without
+  # firefox-tests listed here too, this job would not wait for Firefox at
+  # all, and a Firefox-only failure would never reach centralized triage.
+  # `if: always()` is required here: GitHub Actions skips a downstream
+  # `needs:` job by default once any dependency job fails, and AI triage
+  # specifically needs to run *especially* when Cypress failed - so this
+  # job must always get the chance to start. The actual "is there anything
+  # worth analyzing" decision is made inside the job (aggregate-browser-
+  # context.js's shouldRunAiTriage()), never by this `if:` condition, and
+  # never by an LLM - it's a plain boolean over Cypress's own recorded
+  # outcomes.
   #
   # Diagnostic, not authoritative: this job is intentionally NOT part of
   # branch protection's required checks (Cypress - chrome/edge already
-  # are). AI analysis has never been able to turn a failed Cypress run
-  # green, and that stays true here - see "Fail job on E2E failure" above,
-  # which this job has no influence over.
+  # are; Cypress - firefox is deliberately not required either, at least
+  # initially - see README). AI analysis has never been able to turn a
+  # failed Cypress run green, and that stays true here - see "Fail job on
+  # E2E failure" above, which this job has no influence over.
   qa-ai-triage:
     name: QA AI triage
-    needs: cypress-tests
+    needs: [cypress-tests, firefox-tests]
     if: always()
     runs-on: ubuntu-latest
     # contents: read for checkout; pull-requests: write to post/update the
@@ -306,7 +452,17 @@ jobs:
           name: qa-triage-input-edge
           path: reports/ai/browser-inputs/edge
 
-      # Reads both browsers' browser-result.json, decides whether ANY E2E
+      # Same contract as chrome/edge above - firefox-tests uploads this
+      # artifact unconditionally (always()), so its absence here only ever
+      # means that job never reached its own upload step.
+      - name: Download firefox triage input
+        uses: actions/download-artifact@v7
+        continue-on-error: true
+        with:
+          name: qa-triage-input-firefox
+          path: reports/ai/browser-inputs/firefox
+
+      # Reads every browser's browser-result.json, decides whether ANY E2E
       # failure happened, and if so, deterministically writes ONE browser's
       # context.json/history.json to the exact paths analyze-failure.js
       # already reads - see scripts/ai/aggregate-browser-context.js for the
@@ -468,7 +624,7 @@ jobs:
             );
             const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
 
-            for (const browser of ['chrome', 'edge']) {
+            for (const browser of ['chrome', 'edge', 'firefox']) {
               const marker = MARKER(browser);
               try {
                 const existing = await findMarkedComment({
