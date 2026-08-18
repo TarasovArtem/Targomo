@@ -390,6 +390,20 @@ Not part of this phase: production prompt integration (`qa-agent-prompt.js`/`bui
 
 **Proposed future contract (Roadmap #16, not implemented yet):** a `relevantKnowledge` key on the `buildUserPrompt()` payload, labeled explicitly as *"Relevant curated QA knowledge. Interpretive guidance only; not evidence about the current run."* - it may support an inference or suggest a diagnostic next step, but may never establish a fact, override evidence, override `browserCorrelation`, override history semantics, or override policy.
 
+### Production Knowledge Integration (Roadmap #16)
+
+**Status: IMPLEMENTED / READY FOR REVIEW.** Wires Roadmap #15's knowledge subsystem into the real production QA Agent analysis path. `analyze-failure.js`'s `buildFailureReport()` calls `computeRelevantKnowledge(context)` - a thin wrapper reusing `loadKnowledgeUnits()`/`selectKnowledge()` directly, with zero duplicated logic - and attaches the result onto `context.relevantKnowledge` *before* `runProviderAnalysis()` ever builds the prompt, exactly mirroring how `history` is already threaded through. `qa-agent-prompt.js`'s `buildUserPrompt()` renders it as a plain JSON array field, and a new system-prompt rule 12 establishes the authority contract.
+
+**Knowledge is GUIDANCE ONLY, never current-run EVIDENCE - now enforced in the real prompt, not just designed.** Rule 12 states this explicitly: a knowledge statement may broaden hypotheses, suggest a diagnostic direction, or describe known framework/project behavior, but must never by itself establish what happened in the current run, override direct evidence, override `browserCorrelation`, override history semantics (rule 8), or be copied into `evidence` as though it were something this run's own data showed. If a knowledge statement conflicts with current-run evidence, the evidence wins. This extends rule 11's OBSERVED FACT / SUPPORTED INFERENCE / UNKNOWN grounding contract rather than replacing it. Application policy (`agent-policy.js`) remains structurally unreachable by knowledge content: the model has no awareness of policy at all, and `shouldCreateBug` is gated after model output regardless of what knowledge was present.
+
+**Relevance correction (Roadmap #16B/#16B.1).** An independent review found two curated units' tags were overly broad: `framework-cypress-retry-timeout-semantics`'s bare `"cypress"` tag matched the selector's default framework marker (present in every real context, since none set `context.frameworks`) regardless of topical relevance, and `qa-timeout-error-multiple-causes`'s bare `"assertion"` tag matched any Cypress `"AssertionError:"`-prefixed message. Both were removed, leaving only genuinely topical tags (`retry`/`retry-ability`/`timeout` and `timed out retrying`/`timeout`/`cy.get` respectively). Selection is now correctly empty for element-not-found, network/HTTP, deterministic-assertion, and generic-error failures, while still firing correctly for genuine timeout/retry evidence and cross-browser/Firefox scenarios - proven by a dedicated selector regression suite and two independent mutation tests (re-introducing each broad tag reliably breaks the corresponding new exclusion tests).
+
+**Observability (Roadmap #16C).** The exact knowledge units a given analysis's provider call actually received are now persisted in `ai-report.json`'s `sourceContext.relevantKnowledge` - read directly from `context.relevantKnowledge` (the same value already threaded into the prompt), never recomputed via a second `selectKnowledge()` call, so the frozen artifact can never drift from what the model actually saw. `[]` is written explicitly when nothing matched, distinguishing "no knowledge selected" from "not recorded."
+
+**Single-call invariant preserved throughout.** Knowledge loading/selection is a synchronous, offline, zero-argument-to-provider computation - `computeRelevantKnowledge()` has no provider dependency and cannot be a Promise. `provider.analyze()` is still called exactly once per analysis, proven by call-count tests and by a mutation test that temporarily introduced a second call (the call-count tests correctly failed, then were restored).
+
+Not part of this phase: any external/curated-external knowledge (still zero `CURATED_EXTERNAL` units, nothing fetched from the web), Dataset v5/Baseline v5 (Dataset v1-v4/Baseline v1-v4 remain byte-for-byte unmodified), and any live-model validation of knowledge-assisted behavior - see Roadmap #16D below.
+
 ### Roadmap
 
 **Done:**
@@ -413,10 +427,15 @@ Not part of this phase: production prompt integration (`qa-agent-prompt.js`/`bui
 - Additive Post-Prompt Evaluation Dataset v4 (Roadmap #13) - see [above](#additive-post-prompt-evaluation-dataset-v4-roadmap-13); status: **implemented / ready for review** - two independent post-prompt controlled re-validations of Experiment #41 stored as separate samples alongside the unmodified pre-prompt historical record, `eval:ai:v4`/`eval:regression:v4` available locally, not yet in CI
 - Browser Matrix Expansion - Firefox (Roadmap #14) - see [Continuous Integration](#continuous-integration) and [QA Agent](#qa-agent-ai-failure-analysis) above; status: **implemented locally / pending CI validation** - a dedicated `Cypress - firefox` job runs the existing, unmodified E2E suite on the bare `ubuntu-latest` runner (Roadmap #14B's proven execution strategy), feeds the same centralized aggregator/triage/single-AI-call pipeline as Chrome/Edge, and is deliberately not yet a required branch-protection check; historical Dataset v1-v4/Baseline v1-v4 are unmodified, since this is production execution coverage, not evaluation recuration
 - QA Knowledge / Skills Layer Foundation (Roadmap #15) - see [above](#qa-knowledge--skills-layer-foundation-roadmap-15); status: **implemented / ready for review** - atomic, schema-validated knowledge units (`scripts/ai/knowledge/`), a loader, and a deterministic, zero-provider-call offline selector, plus 4 curated initial units; knowledge is guidance only and cannot override evidence/browserCorrelation/history/policy; production prompt wiring is deliberately absent, no external knowledge exists yet, Dataset/Baseline v1-v4 unmodified
+- Production Knowledge Integration (Roadmap #16) - see [above](#production-knowledge-integration-roadmap-16); status: **implemented / ready for review** - `relevantKnowledge` is now selected deterministically/offline and passed into the real production prompt under a new rule 12 guidance-only authority contract; two overly-broad curated tags were corrected (Roadmap #16B/#16B.1) so timeout/retry guidance no longer fires on unrelated failures; the exact knowledge a given analysis received is now persisted in `ai-report.json`'s `sourceContext.relevantKnowledge` for reproducibility; single-call architecture and all evidence/correlation/history/policy authority boundaries are preserved; no external knowledge, no Dataset v5/Baseline v5, and no live-model validation of knowledge-assisted behavior yet
 
 **Next:**
 
-- Production Knowledge Integration + Evaluation (Roadmap #16)
+- Controlled Live Knowledge Validation (Roadmap #16D)
+
+**Then:**
+
+- Dataset v5 / Baseline v5 (Roadmap #16E)
 
 **Then:**
 

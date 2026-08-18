@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const { selectKnowledge, buildSignalText, getRelevantBrowsers, getRelevantFrameworks } = require("./selector");
+const { loadKnowledgeUnits } = require("./loader");
 
 // --- fixtures (independent of the real scripts/ai/knowledge/units/*.json
 // production corpus - these test their own semantic shapes, not today's
@@ -505,4 +506,115 @@ test("default maxUnits/maxChars apply when options is omitted entirely", () => {
   const context = makeContext({ failedTests: [timeoutFailedTest()] });
   const result = selectKnowledge(context, [timeoutUnit]);
   assert.equal(result.length, 1);
+});
+
+// --- Roadmap #16B.1: relevance-precision regression tests -----------------
+//
+// Unlike the fixture-based tests above (deliberately independent of the
+// real production corpus, per the module comment), these tests load the
+// REAL scripts/ai/knowledge/units/*.json corpus through the real loader,
+// because the defect they guard against (#16B's finding) was specifically
+// about two production units' overly-broad tags - "cypress" on
+// framework-cypress-retry-timeout-semantics and "assertion" on
+// qa-timeout-error-multiple-causes - each of which matched an
+// always-or-frequently-present signal (the default framework marker;
+// Cypress's own "AssertionError:"-prefixed message format) regardless of
+// whether retry/timeout semantics were actually relevant to the failure.
+// Testing against fixtures alone would not catch a regression in the real
+// curated content, only in the selector algorithm (which was NOT changed
+// here - see Phase 7's zero-diff verification).
+
+const realUnits = loadKnowledgeUnits();
+
+function realSelectedIds(context) {
+  return selectKnowledge(context, realUnits).map((u) => u.id);
+}
+
+test("#16B.1 1: framework retry/timeout unit is NOT selected for a generic TypeError", () => {
+  const context = makeContext({
+    failedTests: [
+      {
+        title: "renders map",
+        specFile: "cypress/e2e/tests/render.cy.js",
+        error: { message: "TypeError: cannot read properties of undefined", stack: null },
+      },
+    ],
+  });
+  assert.doesNotMatch(realSelectedIds(context).join(","), /framework-cypress-retry-timeout-semantics/);
+});
+
+test("#16B.1 2: framework retry/timeout unit is NOT selected for a deterministic non-timeout assertion mismatch", () => {
+  const context = makeContext({
+    failedTests: [
+      {
+        title: "counts items",
+        specFile: "cypress/e2e/tests/count.cy.js",
+        error: { message: "AssertionError: expected 3 to equal 2", stack: null },
+      },
+    ],
+  });
+  assert.doesNotMatch(realSelectedIds(context).join(","), /framework-cypress-retry-timeout-semantics/);
+});
+
+test("#16B.1 3: framework retry/timeout unit IS selected for explicit 'Timed out retrying' evidence", () => {
+  const context = makeContext({ failedTests: [timeoutFailedTest()] });
+  assert.match(realSelectedIds(context).join(","), /framework-cypress-retry-timeout-semantics/);
+});
+
+test("#16B.1 4: timeout-multiple-causes unit is NOT selected merely because the error is an AssertionError", () => {
+  const context = makeContext({
+    failedTests: [
+      {
+        title: "counts items",
+        specFile: "cypress/e2e/tests/count.cy.js",
+        error: { message: "AssertionError: expected 3 to equal 2", stack: null },
+      },
+    ],
+  });
+  assert.doesNotMatch(realSelectedIds(context).join(","), /qa-timeout-error-multiple-causes/);
+});
+
+test("#16B.1 5: timeout-multiple-causes unit IS selected when explicit timeout/retry evidence exists", () => {
+  const context = makeContext({ failedTests: [timeoutFailedTest()] });
+  assert.match(realSelectedIds(context).join(","), /qa-timeout-error-multiple-causes/);
+});
+
+test("#16B.1 6: an unrelated network/HTTP failure does not select either timeout/retry unit solely because framework=Cypress", () => {
+  const context = makeContext({
+    failedTests: [
+      {
+        title: "fetches POIs",
+        specFile: "cypress/e2e/tests/poi_data_requests.cy.js",
+        error: { message: "AssertionError: expected 200 to equal 500 (HTTP request failed)", stack: null },
+      },
+    ],
+  });
+  const ids = realSelectedIds(context);
+  assert.doesNotMatch(ids.join(","), /framework-cypress-retry-timeout-semantics/);
+  assert.doesNotMatch(ids.join(","), /qa-timeout-error-multiple-causes/);
+});
+
+test("#16B.1 7: framework appliesTo filtering still works - the unit is eligible for Cypress contexts with genuine topical signals, and excluded when frameworks explicitly do not include cypress", () => {
+  const cypressContext = makeContext({ failedTests: [timeoutFailedTest()] });
+  assert.match(realSelectedIds(cypressContext).join(","), /framework-cypress-retry-timeout-semantics/);
+
+  // Same topical signal, but the context explicitly declares a different
+  // framework - appliesTo.frameworks: ["cypress"] must still exclude it,
+  // proving eligibility scoping (untouched by this correction) still works
+  // independently of the tag-matching fix.
+  const nonCypressContext = makeContext({ failedTests: [timeoutFailedTest()], frameworks: ["playwright"] });
+  assert.doesNotMatch(realSelectedIds(nonCypressContext).join(","), /framework-cypress-retry-timeout-semantics/);
+});
+
+test("#16B.1: real production corpus still contains exactly 4 units with no duplicate ids after the tag correction", () => {
+  assert.equal(realUnits.length, 4);
+  const ids = realUnits.map((u) => u.id);
+  assert.equal(new Set(ids).size, ids.length);
+});
+
+test("#16B.1: corrected tags no longer contain the overbroad 'cypress'/'assertion' entries", () => {
+  const frameworkUnitReal = realUnits.find((u) => u.id === "framework-cypress-retry-timeout-semantics");
+  const timeoutUnitReal = realUnits.find((u) => u.id === "qa-timeout-error-multiple-causes");
+  assert.deepEqual(frameworkUnitReal.tags, ["retry", "retry-ability", "timeout"]);
+  assert.deepEqual(timeoutUnitReal.tags, ["timed out retrying", "timeout", "cy.get"]);
 });
