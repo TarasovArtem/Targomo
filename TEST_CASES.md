@@ -1,6 +1,6 @@
 # Test Cases
 
-Manual test-case documentation for the automated Cypress suite in this repository. Target application: [https://poi.targomo.com](https://poi.targomo.com). Browsers covered by CI: Chrome, Firefox.
+Manual test-case documentation for the automated Cypress suite in this repository. Target application: [https://poi.targomo.com](https://poi.targomo.com). Browsers covered by CI: Chrome, Edge, Firefox.
 
 ## Summary
 

@@ -2,11 +2,12 @@
 /**
  * Browser input aggregator for the centralized QA AI triage job.
  *
- * Each Cypress browser matrix leg (chrome, edge) uploads its own small,
- * browser-scoped artifact (browser-result.json always; context.json/
+ * Each Cypress browser job (cypress-tests' chrome/edge matrix legs, plus
+ * the standalone firefox-tests job since Roadmap #14C) uploads its own
+ * small, browser-scoped artifact (browser-result.json always; context.json/
  * history.json only when that leg actually failed - see
- * .github/workflows/cypress.yml). This script runs downstream, after both
- * legs have finished, once their artifacts have been downloaded into
+ * .github/workflows/cypress.yml). This script runs downstream, after every
+ * browser job has finished, once their artifacts have been downloaded into
  * reports/ai/browser-inputs/<browser>/:
  *
  *   read every browser's result -> decide whether ANY of them failed ->
@@ -51,11 +52,17 @@ const DEFAULT_BROWSER_INPUTS_DIR = path.join(ROOT, "reports", "ai", "browser-inp
 const CONTEXT_FILE = path.join(ROOT, "reports", "ai", "context.json");
 const HISTORY_FILE = path.join(ROOT, "reports", "ai", "history.json");
 
-// Matches the CI matrix declared in .github/workflows/cypress.yml
-// (browser: [chrome, edge]) - also doubles as the default priority order
-// used to deterministically pick a primary browser when more than one
-// failed, so the same input always yields the same choice.
-const DEFAULT_BROWSER_PRIORITY = ["chrome", "edge"];
+// Matches the CI browsers declared in .github/workflows/cypress.yml
+// (cypress-tests' matrix: [chrome, edge], plus firefox-tests since
+// Roadmap #14C) - also doubles as the default priority order used to
+// deterministically pick a primary browser when more than one failed, so
+// the same input always yields the same choice. This is also the list
+// readBrowserInputs() below actually looks for artifact directories under
+// when main() calls it with no arguments (the real production path) - a
+// browser missing from this list is invisible to aggregation entirely,
+// not just deprioritized, regardless of whether that browser's job and
+// artifact upload actually ran.
+const DEFAULT_BROWSER_PRIORITY = ["chrome", "edge", "firefox"];
 
 function log(message) {
   process.stdout.write(`[ai:aggregate] ${message}\n`);

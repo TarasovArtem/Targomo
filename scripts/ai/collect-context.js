@@ -36,7 +36,7 @@ const MAX_STACK_CHARS = 4000;
 // plain list here rather than scattered if-statements in JS, so adding a
 // new known issue is a one-line change, not new branching logic.
 const KNOWN_PROJECT_CONSTRAINTS = [
-  "Firefox is intentionally excluded from this CI workflow's browser matrix (chrome, edge only) due to a known Firefox-in-nested-Docker WebDriver launch/hang issue in this container setup, unrelated to the application or test code. It is not evidence of a browser-specific product bug.",
+  "Firefox runs in this CI workflow (Roadmap #14C) in a different execution environment from Chrome/Edge: Chrome and Edge run inside a cypress/included Docker container, while Firefox runs directly on the bare GitHub Actions runner with Firefox installed explicitly. This split exists because Firefox previously hung during WebDriver session creation when run inside that same nested container - an infrastructure/sandboxing limitation of that specific setup, not evidence of a browser-specific product bug or test defect.",
   "The application under test (poi.targomo.com) is a live, externally hosted third-party service outside this repository's control - it has no staging/mocked environment, so failures can reflect real upstream instability, not just this repo's code.",
 ];
 
