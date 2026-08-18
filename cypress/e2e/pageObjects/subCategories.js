@@ -14,9 +14,7 @@ export class SubCategories {
     }
 
     getFoodCourt() {
-        return Cypress.browser.name === 'edge'
-            ? cy.contains('mat-checkbox', 'Food Courts')
-            : cy.contains('mat-checkbox', 'Food-court');
+        return cy.contains('mat-checkbox', 'Food court');
     }
 
     getRestaurant() {
