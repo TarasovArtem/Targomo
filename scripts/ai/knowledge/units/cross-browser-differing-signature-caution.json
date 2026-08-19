@@ -4,7 +4,7 @@
   "sourceType": "CURATED_INTERNAL",
   "source": null,
   "verifiedAt": "2026-08-18",
-  "tags": ["browserCorrelation", "sameFailureSignature", "cross-browser", "signature"],
+  "tags": ["sameFailureSignature=false"],
   "appliesTo": { "browsers": null, "frameworks": ["cypress"] },
   "statement": "When multiple browsers fail with differing failure signatures in the same run, this can indicate different failure paths across browsers, but it does not by itself prove a browser-specific causal mechanism - the individual failure evidence for each browser should still be examined before concluding the cause is browser-specific.",
   "priority": 8
