@@ -1,0 +1,11 @@
+{
+  "id": "framework-cypress-command-retry-ability-scope",
+  "category": "FRAMEWORK",
+  "sourceType": "CURATED_EXTERNAL",
+  "source": "Cypress Documentation - Retry-ability - https://docs.cypress.io/app/core-concepts/retry-ability; Cypress Documentation - Error Messages in Cypress - https://docs.cypress.io/app/references/error-messages",
+  "verifiedAt": "2026-08-19",
+  "tags": ["cannot be interacted with"],
+  "appliesTo": { "browsers": null, "frameworks": ["cypress"] },
+  "statement": "Cypress automatically retries the queries and assertions surrounding a command until they pass or a timeout elapses, but the action command itself (e.g. .click() or .type()) executes only once, after built-in actionability checks confirm the element can be interacted with - the action is not itself retried, only those checks are. An error stating an element 'cannot be interacted with' reflects a failed actionability check on that one-shot action step, not a failing query or assertion, and should be diagnosed against the application's current state rather than treated as a generic retry/timeout exhaustion.",
+  "priority": 4
+}

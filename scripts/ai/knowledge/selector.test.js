@@ -606,10 +606,21 @@ test("#16B.1 7: framework appliesTo filtering still works - the unit is eligible
   assert.doesNotMatch(realSelectedIds(nonCypressContext).join(","), /framework-cypress-retry-timeout-semantics/);
 });
 
-test("#16B.1: real production corpus still contains exactly 4 units with no duplicate ids after the tag correction", () => {
-  assert.equal(realUnits.length, 4);
+test("#17.2: real production corpus contains exactly 6 units (4 original + 2 curated-external) with no duplicate ids", () => {
+  assert.equal(realUnits.length, 6);
   const ids = realUnits.map((u) => u.id);
   assert.equal(new Set(ids).size, ids.length);
+  assert.deepEqual(
+    ids.slice().sort(),
+    [
+      "ci-job-isolation-runner-state",
+      "cross-browser-differing-signature-caution",
+      "framework-cypress-command-retry-ability-scope",
+      "framework-cypress-retry-timeout-semantics",
+      "project-firefox-execution-environment-split",
+      "qa-timeout-error-multiple-causes",
+    ].sort()
+  );
 });
 
 test("#16B.1: corrected tags no longer contain the overbroad 'cypress'/'assertion' entries", () => {
@@ -719,4 +730,195 @@ test("#16D.1: statement/appliesTo/priority/category/id are unchanged by the tag 
   assert.equal(crossBrowserUnitReal.priority, 8);
   assert.deepEqual(crossBrowserUnitReal.appliesTo, { browsers: null, frameworks: ["cypress"] });
   assert.match(crossBrowserUnitReal.statement, /differing failure signatures/);
+});
+
+// --- Roadmap #17.2: curated-external knowledge (2 accepted candidates) ----
+//
+// Two source-verified CURATED_EXTERNAL units were added to the production
+// corpus. Both are deliberately narrow: rather than reusing already-broad
+// tags ("cypress", "timeout", "retry", browser names), each keys on a
+// specific, naturally-occurring signal distinct from every existing unit's
+// activation surface, so it does not co-fire with unrelated failures or
+// with the sibling internal unit in its own category. A third candidate
+// (cross-browser-engine-differences-caution) was researched and REJECTED -
+// no primary/authoritative source was found supporting a sufficiently
+// narrow, non-folklore, generally-useful statement - so no third unit
+// exists in the corpus and none of these tests reference it.
+
+function actionabilityFailedTest() {
+  return {
+    title: "expands gastronomy checkbox",
+    specFile: "cypress/e2e/tests/select_group_POI.cy.js",
+    error: {
+      message:
+        "CypressError: cy.click() failed because this element cannot be interacted with: <mat-checkbox> is being covered by another element",
+      stack: null,
+    },
+  };
+}
+
+function ciJobIsolationFailedTest() {
+  return {
+    title: "verifies clean workspace state per job",
+    specFile: "cypress/e2e/tests/ci_job_isolation.cy.js",
+    error: {
+      message: "AssertionError: expected fresh runner state, but found leftover data from a previous job (job isolation violated)",
+      stack: null,
+    },
+  };
+}
+
+test("#17.2 candidate 1 positive: an actionability failure ('cannot be interacted with') selects framework-cypress-command-retry-ability-scope", () => {
+  const context = makeContext({ failedTests: [actionabilityFailedTest()] });
+  assert.match(realSelectedIds(context).join(","), /framework-cypress-command-retry-ability-scope/);
+});
+
+test("#17.2 candidate 1 negative: a plain assertion mismatch does not select it", () => {
+  const context = makeContext({
+    failedTests: [{ title: "counts items", specFile: "cypress/e2e/tests/count.cy.js", error: { message: "AssertionError: expected 3 to equal 2", stack: null } }],
+  });
+  assert.doesNotMatch(realSelectedIds(context).join(","), /framework-cypress-command-retry-ability-scope/);
+});
+
+test("#17.2 candidate 1 negative: a generic query/assertion timeout (no actionability wording) selects the existing timeout units but NOT the new one - proves it is narrower than, not a duplicate of, framework-cypress-retry-timeout-semantics/qa-timeout-error-multiple-causes", () => {
+  const context = makeContext({ failedTests: [timeoutFailedTest()] });
+  const ids = realSelectedIds(context);
+  assert.doesNotMatch(ids.join(","), /framework-cypress-command-retry-ability-scope/);
+  assert.match(ids.join(","), /qa-timeout-error-multiple-causes/);
+});
+
+test("#17.2 candidate 1 negative: K5-shaped zero-knowledge context (plain assertion, real knownProjectConstraints present) selects nothing", () => {
+  const context = makeContext({
+    failedTests: [{ title: "selects gastronomy category", specFile: "cypress/e2e/tests/select_group_POI.cy.js", error: { message: "AssertionError: expected 3 to equal 2", stack: null } }],
+    knownProjectConstraints: [
+      "Firefox runs in this CI workflow (Roadmap #14C) in a different execution environment from Chrome/Edge: Chrome and Edge run inside a cypress/included Docker container, while Firefox runs directly on the bare GitHub Actions runner with Firefox installed explicitly. This split exists because Firefox previously hung during WebDriver session creation when run inside that same nested container - an infrastructure/sandboxing limitation of that specific setup, not evidence of a browser-specific product bug or test defect.",
+    ],
+  });
+  assert.deepEqual(realSelectedIds(context), []);
+});
+
+test("#17.2 candidate 1 negative: a generic TypeError/runtime exception does not select it", () => {
+  const context = makeContext({
+    failedTests: [{ title: "renders map", specFile: "cypress/e2e/tests/render.cy.js", error: { message: "TypeError: cannot read properties of undefined", stack: null } }],
+  });
+  assert.doesNotMatch(realSelectedIds(context).join(","), /framework-cypress-command-retry-ability-scope/);
+});
+
+test("#17.2 candidate 1 mutation/non-vacuity: removing the unit's own tag stops it from being selected for the same positive context", () => {
+  const context = makeContext({ failedTests: [actionabilityFailedTest()] });
+  const mutatedUnits = realUnits.map((u) =>
+    u.id === "framework-cypress-command-retry-ability-scope" ? { ...u, tags: ["some-unrelated-tag-xyz"] } : u
+  );
+  const idsWithRealTag = selectKnowledge(context, realUnits).map((u) => u.id);
+  const idsWithMutatedTag = selectKnowledge(context, mutatedUnits).map((u) => u.id);
+  assert.ok(idsWithRealTag.includes("framework-cypress-command-retry-ability-scope"));
+  assert.ok(!idsWithMutatedTag.includes("framework-cypress-command-retry-ability-scope"));
+});
+
+test("#17.2 candidate 3 positive: a CI job-isolation-shaped failure selects ci-job-isolation-runner-state", () => {
+  const context = makeContext({ failedTests: [ciJobIsolationFailedTest()] });
+  assert.match(realSelectedIds(context).join(","), /ci-job-isolation-runner-state/);
+});
+
+test("#17.2 candidate 3 negative: a single Firefox failure with the real, always-attached knownProjectConstraints text (which contains the bare word 'runner') does NOT select it - proves the tags 'job isolation'/'fresh runner' do not collide with that always-present constraint text the way #16D.1's old tags collided with sameFailureSignature", () => {
+  const context = makeContext({
+    metadata: { browser: "firefox" },
+    failedTests: [{ title: "renders map", specFile: "cypress/e2e/tests/map.cy.js", error: { message: "AssertionError: expected element to exist", stack: null } }],
+    knownProjectConstraints: [
+      "Firefox runs in this CI workflow (Roadmap #14C) in a different execution environment from Chrome/Edge: Chrome and Edge run inside a cypress/included Docker container, while Firefox runs directly on the bare GitHub Actions runner with Firefox installed explicitly. This split exists because Firefox previously hung during WebDriver session creation when run inside that same nested container - an infrastructure/sandboxing limitation of that specific setup, not evidence of a browser-specific product bug or test defect.",
+    ],
+  });
+  assert.doesNotMatch(realSelectedIds(context).join(","), /ci-job-isolation-runner-state/);
+});
+
+test("#17.2 candidate 3 negative: sameFailureSignature=false (cross-browser caution's own trigger) does not additionally select it", () => {
+  const context = multiBrowserContext(["chrome", "edge"], ["chrome", "edge"], false);
+  assert.doesNotMatch(realSelectedIds(context).join(","), /ci-job-isolation-runner-state/);
+});
+
+test("#17.2 candidate 3 negative: a generic TypeError/runtime exception does not select it", () => {
+  const context = makeContext({
+    failedTests: [{ title: "renders map", specFile: "cypress/e2e/tests/render.cy.js", error: { message: "TypeError: cannot read properties of undefined", stack: null } }],
+  });
+  assert.doesNotMatch(realSelectedIds(context).join(","), /ci-job-isolation-runner-state/);
+});
+
+test("#17.2 candidate 3 negative: K5-shaped zero-knowledge context selects nothing", () => {
+  const context = makeContext({
+    failedTests: [{ title: "selects gastronomy category", specFile: "cypress/e2e/tests/select_group_POI.cy.js", error: { message: "AssertionError: expected 3 to equal 2", stack: null } }],
+    knownProjectConstraints: [
+      "Firefox runs in this CI workflow (Roadmap #14C) in a different execution environment from Chrome/Edge: Chrome and Edge run inside a cypress/included Docker container, while Firefox runs directly on the bare GitHub Actions runner with Firefox installed explicitly. This split exists because Firefox previously hung during WebDriver session creation when run inside that same nested container - an infrastructure/sandboxing limitation of that specific setup, not evidence of a browser-specific product bug or test defect.",
+    ],
+  });
+  assert.deepEqual(realSelectedIds(context), []);
+});
+
+test("#17.2 candidate 3 mutation/non-vacuity: removing the unit's own tags stops it from being selected for the same positive context", () => {
+  const context = makeContext({ failedTests: [ciJobIsolationFailedTest()] });
+  const mutatedUnits = realUnits.map((u) => (u.id === "ci-job-isolation-runner-state" ? { ...u, tags: ["some-unrelated-tag-xyz"] } : u));
+  const idsWithRealTags = selectKnowledge(context, realUnits).map((u) => u.id);
+  const idsWithMutatedTags = selectKnowledge(context, mutatedUnits).map((u) => u.id);
+  assert.ok(idsWithRealTags.includes("ci-job-isolation-runner-state"));
+  assert.ok(!idsWithMutatedTags.includes("ci-job-isolation-runner-state"));
+});
+
+test("#17.2: K1/K3/K4-shaped collision check - existing selection behavior for genuine timeout, cross-browser differing-signature, and single-Firefox contexts is unaffected by the two new units", () => {
+  // K1-shaped: genuine Cypress timeout - unaffected by the new actionability unit.
+  const k1 = makeContext({ failedTests: [timeoutFailedTest()] });
+  assert.deepEqual(realSelectedIds(k1).sort(), ["framework-cypress-retry-timeout-semantics", "qa-timeout-error-multiple-causes"].sort());
+
+  // K3-shaped: multi-browser differing signatures - unaffected by the new CI unit.
+  const k3 = multiBrowserContext(["chrome", "edge", "firefox"], ["chrome", "firefox"], false);
+  assert.ok(realSelectedIds(k3).includes("cross-browser-differing-signature-caution"));
+  assert.ok(!realSelectedIds(k3).includes("ci-job-isolation-runner-state"));
+  assert.ok(!realSelectedIds(k3).includes("framework-cypress-command-retry-ability-scope"));
+
+  // K4-shaped: single Firefox failure, project knowledge stays the sole/dominant match.
+  const k4 = makeContext({
+    metadata: { browser: "firefox" },
+    failedTests: [{ title: "renders map", specFile: "cypress/e2e/tests/map.cy.js", error: { message: "AssertionError: expected element to exist", stack: null } }],
+    knownProjectConstraints: [
+      "Firefox runs in this CI workflow (Roadmap #14C) in a different execution environment from Chrome/Edge: Chrome and Edge run inside a cypress/included Docker container, while Firefox runs directly on the bare GitHub Actions runner with Firefox installed explicitly. This split exists because Firefox previously hung during WebDriver session creation when run inside that same nested container - an infrastructure/sandboxing limitation of that specific setup, not evidence of a browser-specific product bug or test defect.",
+    ],
+    browserCorrelation: {
+      browsers: ["chrome", "edge", "firefox"],
+      failedBrowsers: ["firefox"],
+      passedBrowsers: ["chrome", "edge"],
+      primaryBrowser: "firefox",
+      additionalFailedBrowsers: [],
+      failureScope: "single-browser",
+      sameFailureSignature: null,
+    },
+  });
+  assert.deepEqual(realSelectedIds(k4), ["project-firefox-execution-environment-split"]);
+});
+
+test("#17.2: K5-shaped true zero-knowledge context still selects exactly [] with the expanded 6-unit corpus", () => {
+  const k5 = makeContext({
+    failedTests: [{ title: "selects gastronomy category", specFile: "cypress/e2e/tests/select_group_POI.cy.js", error: { message: "AssertionError: expected 3 to equal 2", stack: null } }],
+    knownProjectConstraints: [
+      "Firefox runs in this CI workflow (Roadmap #14C) in a different execution environment from Chrome/Edge: Chrome and Edge run inside a cypress/included Docker container, while Firefox runs directly on the bare GitHub Actions runner with Firefox installed explicitly. This split exists because Firefox previously hung during WebDriver session creation when run inside that same nested container - an infrastructure/sandboxing limitation of that specific setup, not evidence of a browser-specific product bug or test defect.",
+      "The application under test (poi.targomo.com) is a live, externally hosted third-party service outside this repository's control - it has no staging/mocked environment, so failures can reflect real upstream instability, not just this repo's code.",
+    ],
+  });
+  assert.deepEqual(realSelectedIds(k5), []);
+});
+
+test("#17.2: both new units carry sourceType CURATED_EXTERNAL with a non-null canonical source", () => {
+  const candidate1 = realUnits.find((u) => u.id === "framework-cypress-command-retry-ability-scope");
+  const candidate3 = realUnits.find((u) => u.id === "ci-job-isolation-runner-state");
+  assert.equal(candidate1.sourceType, "CURATED_EXTERNAL");
+  assert.match(candidate1.source, /docs\.cypress\.io/);
+  assert.equal(candidate3.sourceType, "CURATED_EXTERNAL");
+  assert.match(candidate3.source, /docs\.github\.com/);
+});
+
+test("#17.2: neither new unit outranks PROJECT_VERIFIED/CURATED_INTERNAL priority - external knowledge stays below existing internal/project-verified units", () => {
+  const candidate1 = realUnits.find((u) => u.id === "framework-cypress-command-retry-ability-scope");
+  const candidate3 = realUnits.find((u) => u.id === "ci-job-isolation-runner-state");
+  const projectVerified = realUnits.find((u) => u.id === "project-firefox-execution-environment-split");
+  const internalFrameworkSibling = realUnits.find((u) => u.id === "framework-cypress-retry-timeout-semantics");
+  assert.ok(candidate1.priority < internalFrameworkSibling.priority);
+  assert.ok(candidate1.priority < projectVerified.priority);
+  assert.ok(candidate3.priority < projectVerified.priority);
 });
