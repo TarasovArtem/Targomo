@@ -1,0 +1,827 @@
+{
+  "version": 5,
+  "samples": [
+    {
+      "id": "experiment-2-broken-selector",
+      "scenario": "broken-selector",
+      "description": "subCategories.js's getFastFood() selector broken ('Fast food' -> 'Fastfood'), causing the Fast Food subcategory checkbox to never be found.",
+      "groundTruth": {
+        "classification": "TEST_BUG",
+        "shouldRetry": false,
+        "shouldCreateBug": false
+      },
+      "actual": {
+        "classification": "FLAKY_TEST",
+        "confidence": 0.78,
+        "shouldRetry": true,
+        "originalShouldCreateBug": false,
+        "finalShouldCreateBug": false,
+        "policyAdjusted": false
+      },
+      "quality": {
+        "classification": "fail",
+        "rootCause": "partial",
+        "evidence": "partial",
+        "recommendedFix": "fail",
+        "historyUsage": "misleading",
+        "fabricatedEvidence": false,
+        "correlationConstruction": "not_applicable",
+        "correlationTransport": "not_applicable",
+        "correlationReasoning": "not_applicable",
+        "knowledgeUsage": "not_applicable",
+        "knowledgeGrounding": "not_applicable",
+        "inferenceQuality": null
+      },
+      "ambiguity": {
+        "isAmbiguous": false,
+        "reason": null
+      },
+      "correlation": {
+        "applicable": false,
+        "observed": null
+      },
+      "knowledge": {
+        "applicable": false,
+        "expectedPresentUnitIds": null,
+        "expectedAbsentUnitIds": null,
+        "expectedExactSelectedUnitIds": null,
+        "actualSelectedUnitIds": null
+      },
+      "metadata": {
+        "experiment": 2,
+        "provider": "groq",
+        "model": "openai/gpt-oss-120b",
+        "PR": 25,
+        "workflowRun": 31574576182
+      }
+    },
+    {
+      "id": "experiment-3-application-like-mismatch",
+      "scenario": "application-like-mismatch",
+      "description": "cypress/support/e2e.js's watchPoiTileRequests custom command rewrote outgoing POI tile requests, changing group=restaurant to group=g_eat-out, so the app-observed request never matched the selected subcategory.",
+      "groundTruth": {
+        "classification": "PRODUCT_BUG",
+        "shouldRetry": false,
+        "shouldCreateBug": true
+      },
+      "actual": {
+        "classification": "PRODUCT_BUG",
+        "confidence": 0.66,
+        "shouldRetry": false,
+        "originalShouldCreateBug": true,
+        "finalShouldCreateBug": true,
+        "policyAdjusted": false
+      },
+      "quality": {
+        "classification": "pass",
+        "rootCause": "pass",
+        "evidence": "pass",
+        "recommendedFix": "pass",
+        "historyUsage": "neutral",
+        "fabricatedEvidence": false,
+        "correlationConstruction": "not_applicable",
+        "correlationTransport": "not_applicable",
+        "correlationReasoning": "not_applicable",
+        "knowledgeUsage": "not_applicable",
+        "knowledgeGrounding": "not_applicable",
+        "inferenceQuality": null
+      },
+      "ambiguity": {
+        "isAmbiguous": false,
+        "reason": null
+      },
+      "correlation": {
+        "applicable": false,
+        "observed": null
+      },
+      "knowledge": {
+        "applicable": false,
+        "expectedPresentUnitIds": null,
+        "expectedAbsentUnitIds": null,
+        "expectedExactSelectedUnitIds": null,
+        "actualSelectedUnitIds": null
+      },
+      "metadata": {
+        "experiment": 3,
+        "provider": "groq",
+        "model": "openai/gpt-oss-120b",
+        "PR": 26,
+        "workflowRun": 32014019151
+      }
+    },
+    {
+      "id": "experiment-4-deterministic-test-bug-history",
+      "scenario": "deterministic-test-bug-history",
+      "description": "category_tree_behavior.cy.js's tri-state checkbox assertion was flipped (expected class inverted), causing a deterministic, non-flaky test failure.",
+      "groundTruth": {
+        "classification": "TEST_BUG",
+        "shouldRetry": false,
+        "shouldCreateBug": false
+      },
+      "actual": {
+        "classification": "TEST_BUG",
+        "confidence": 0.68,
+        "shouldRetry": false,
+        "originalShouldCreateBug": false,
+        "finalShouldCreateBug": false,
+        "policyAdjusted": false
+      },
+      "quality": {
+        "classification": "pass",
+        "rootCause": "pass",
+        "evidence": "pass",
+        "recommendedFix": "pass",
+        "historyUsage": "neutral",
+        "fabricatedEvidence": false,
+        "correlationConstruction": "not_applicable",
+        "correlationTransport": "not_applicable",
+        "correlationReasoning": "not_applicable",
+        "knowledgeUsage": "not_applicable",
+        "knowledgeGrounding": "not_applicable",
+        "inferenceQuality": null
+      },
+      "ambiguity": {
+        "isAmbiguous": false,
+        "reason": null
+      },
+      "correlation": {
+        "applicable": false,
+        "observed": null
+      },
+      "knowledge": {
+        "applicable": false,
+        "expectedPresentUnitIds": null,
+        "expectedAbsentUnitIds": null,
+        "expectedExactSelectedUnitIds": null,
+        "actualSelectedUnitIds": null
+      },
+      "metadata": {
+        "experiment": 4,
+        "provider": "groq",
+        "model": "openai/gpt-oss-120b",
+        "PR": 27,
+        "workflowRun": 32016372911
+      }
+    },
+    {
+      "id": "experiment-5-real-flaky-test",
+      "scenario": "real-flaky-test",
+      "description": "cypress.config.js's setupNodeEvents plus a redefined watchPoiTileRequests in cypress/support/e2e.js delayed/withheld the POI tile response for 40s on the first attempt only (GITHUB_RUN_ATTEMPT=1), producing a genuinely intermittent, retry-recoverable failure.",
+      "groundTruth": {
+        "classification": "FLAKY_TEST",
+        "shouldRetry": true,
+        "shouldCreateBug": false
+      },
+      "actual": {
+        "classification": "EXTERNAL_DEPENDENCY",
+        "confidence": 0.75,
+        "shouldRetry": true,
+        "originalShouldCreateBug": false,
+        "finalShouldCreateBug": false,
+        "policyAdjusted": false
+      },
+      "quality": {
+        "classification": "ambiguous",
+        "rootCause": "partial",
+        "evidence": "partial",
+        "recommendedFix": "pass",
+        "historyUsage": "appropriate",
+        "fabricatedEvidence": false,
+        "correlationConstruction": "not_applicable",
+        "correlationTransport": "not_applicable",
+        "correlationReasoning": "not_applicable",
+        "knowledgeUsage": "not_applicable",
+        "knowledgeGrounding": "not_applicable",
+        "inferenceQuality": null
+      },
+      "ambiguity": {
+        "isAmbiguous": true,
+        "reason": "The controlled mechanism delayed/withheld an HTTP response, which overlaps with the current EXTERNAL_DEPENDENCY definition. Therefore the classification mismatch is a boundary-case ambiguity, not a clean model failure."
+      },
+      "correlation": {
+        "applicable": false,
+        "observed": null
+      },
+      "knowledge": {
+        "applicable": false,
+        "expectedPresentUnitIds": null,
+        "expectedAbsentUnitIds": null,
+        "expectedExactSelectedUnitIds": null,
+        "actualSelectedUnitIds": null
+      },
+      "metadata": {
+        "experiment": 5,
+        "provider": "groq",
+        "model": "openai/gpt-oss-120b",
+        "PR": 28,
+        "workflowRun": 32019413817,
+        "retrySuccessWorkflowRun": 32021340947
+      }
+    },
+    {
+      "id": "experiment-A-multi-browser-same-signature",
+      "scenario": "multi-browser-correlation-same-signature",
+      "description": "Controlled Multi-Browser Correlation Experiment, Scenario A: select_group_POI.cy.js's final assertion inverted ('not.have.class' -> 'have.class'), producing an identical deterministic failure (same specFile/fullTitle/error) in both Chrome and Edge in the same workflow run.",
+      "groundTruth": {
+        "classification": "TEST_BUG",
+        "shouldRetry": false,
+        "shouldCreateBug": false
+      },
+      "actual": {
+        "classification": "TEST_BUG",
+        "confidence": 0.95,
+        "shouldRetry": false,
+        "originalShouldCreateBug": false,
+        "finalShouldCreateBug": false,
+        "policyAdjusted": false
+      },
+      "quality": {
+        "classification": "pass",
+        "rootCause": "pass",
+        "evidence": "pass",
+        "recommendedFix": "pass",
+        "historyUsage": "not_clear",
+        "fabricatedEvidence": false,
+        "correlationConstruction": "pass",
+        "correlationTransport": "pass",
+        "correlationReasoning": "partial",
+        "knowledgeUsage": "not_applicable",
+        "knowledgeGrounding": "not_applicable",
+        "inferenceQuality": null
+      },
+      "ambiguity": {
+        "isAmbiguous": false,
+        "reason": null
+      },
+      "correlation": {
+        "applicable": true,
+        "observed": {
+          "browsers": ["chrome", "edge"],
+          "failedBrowsers": ["chrome", "edge"],
+          "passedBrowsers": [],
+          "primaryBrowser": "chrome",
+          "additionalFailedBrowsers": ["edge"],
+          "failureScope": "multi-browser",
+          "sameFailureSignature": true
+        }
+      },
+      "knowledge": {
+        "applicable": false,
+        "expectedPresentUnitIds": null,
+        "expectedAbsentUnitIds": null,
+        "expectedExactSelectedUnitIds": null,
+        "actualSelectedUnitIds": null
+      },
+      "metadata": {
+        "experiment": "A",
+        "provider": "groq",
+        "model": "openai/gpt-oss-120b",
+        "PR": 35,
+        "workflowRun": 32039821199,
+        "controlledFailureSha": "f68e978e959dd7abb24d422b45c18bead0f361a1",
+        "revertSha": "85eebea70f5e3feef8c6cdd6c62b7c78f5b959d3"
+      }
+    },
+    {
+      "id": "experiment-B-multi-browser-different-signatures",
+      "scenario": "multi-browser-correlation-different-signatures",
+      "description": "Controlled Multi-Browser Correlation Experiment, Scenario B: category_tree_behavior.cy.js's final assertion replaced with a Cypress.browser.name-conditional deterministic defect, so Chrome and Edge each fail the same test but against different checkboxes (Gastronomy vs Shopping), producing different deterministic error signatures in the same workflow run.",
+      "groundTruth": {
+        "classification": "TEST_BUG",
+        "shouldRetry": false,
+        "shouldCreateBug": false
+      },
+      "actual": {
+        "classification": "TEST_BUG",
+        "confidence": 0.92,
+        "shouldRetry": false,
+        "originalShouldCreateBug": false,
+        "finalShouldCreateBug": false,
+        "policyAdjusted": false
+      },
+      "quality": {
+        "classification": "pass",
+        "rootCause": "pass",
+        "evidence": "pass",
+        "recommendedFix": "pass",
+        "historyUsage": "appropriate",
+        "fabricatedEvidence": false,
+        "correlationConstruction": "pass",
+        "correlationTransport": "pass",
+        "correlationReasoning": "partial",
+        "knowledgeUsage": "not_applicable",
+        "knowledgeGrounding": "not_applicable",
+        "inferenceQuality": null
+      },
+      "ambiguity": {
+        "isAmbiguous": false,
+        "reason": null
+      },
+      "correlation": {
+        "applicable": true,
+        "observed": {
+          "browsers": ["chrome", "edge"],
+          "failedBrowsers": ["chrome", "edge"],
+          "passedBrowsers": [],
+          "primaryBrowser": "chrome",
+          "additionalFailedBrowsers": ["edge"],
+          "failureScope": "multi-browser",
+          "sameFailureSignature": false
+        }
+      },
+      "knowledge": {
+        "applicable": false,
+        "expectedPresentUnitIds": null,
+        "expectedAbsentUnitIds": null,
+        "expectedExactSelectedUnitIds": null,
+        "actualSelectedUnitIds": null
+      },
+      "metadata": {
+        "experiment": "B",
+        "provider": "groq",
+        "model": "openai/gpt-oss-120b",
+        "PR": 36,
+        "workflowRun": 32041197768,
+        "controlledFailureSha": "acb7baf771a9c666cd5db648ab611800abbb599b",
+        "revertSha": "7bbb28713ec76ad97cd37550a02dfd3728de4909"
+      }
+    },
+    {
+      "id": "experiment-41-correlation-necessary-grounding",
+      "scenario": "correlation-necessary-different-signatures",
+      "description": "Controlled Correlation-Necessary Experiment: subCategories.js's getFoodCourt() resolves a different, non-matching label-text variant of the real 'Food court' checkbox depending on Cypress.browser.name ('Food-court' vs 'Food Courts'), producing a genuine Cypress cy.contains() timeout in both Chrome and Edge with different quoted missing text - different deterministic failure signatures, deliberately designed so neither browser's evidence alone is decisive and cross-browser comparison is diagnostically material.",
+      "groundTruth": {
+        "classification": "TEST_BUG",
+        "shouldRetry": false,
+        "shouldCreateBug": false
+      },
+      "actual": {
+        "classification": "TEST_BUG",
+        "confidence": 0.78,
+        "shouldRetry": false,
+        "originalShouldCreateBug": false,
+        "finalShouldCreateBug": false,
+        "policyAdjusted": false
+      },
+      "quality": {
+        "classification": "pass",
+        "rootCause": "fail",
+        "evidence": "fail",
+        "recommendedFix": "partial",
+        "historyUsage": "not_clear",
+        "fabricatedEvidence": true,
+        "correlationConstruction": "pass",
+        "correlationTransport": "pass",
+        "correlationReasoning": "fail",
+        "knowledgeUsage": "not_applicable",
+        "knowledgeGrounding": "not_applicable",
+        "inferenceQuality": null
+      },
+      "ambiguity": {
+        "isAmbiguous": false,
+        "reason": null
+      },
+      "correlation": {
+        "applicable": true,
+        "observed": {
+          "browsers": ["chrome", "edge"],
+          "failedBrowsers": ["chrome", "edge"],
+          "passedBrowsers": [],
+          "primaryBrowser": "chrome",
+          "additionalFailedBrowsers": ["edge"],
+          "failureScope": "multi-browser",
+          "sameFailureSignature": false
+        }
+      },
+      "knowledge": {
+        "applicable": false,
+        "expectedPresentUnitIds": null,
+        "expectedAbsentUnitIds": null,
+        "expectedExactSelectedUnitIds": null,
+        "actualSelectedUnitIds": null
+      },
+      "metadata": {
+        "experiment": 41,
+        "provider": "groq",
+        "model": "openai/gpt-oss-120b",
+        "PR": 41,
+        "workflowRun": 32054058161,
+        "controlledFailureSha": "2295c528785f1b9936e11292f97a6335836a1204",
+        "revertSha": "95067168cb6747a4bd74cc2903bd5c953451a57e"
+      }
+    },
+    {
+      "id": "experiment-45-post-prompt-grounding-revalidation",
+      "scenario": "correlation-necessary-different-signatures",
+      "description": "First independent post-prompt controlled re-validation of the Experiment #41 scenario (Roadmap #11 grounding prompt improvement): the exact historical controlled defect (subCategories.js's getFoodCourt() resolving a different, non-matching label-text variant per Cypress.browser.name) was reproduced byte-for-byte against the merged grounding prompt. The first provider response was malformed JSON; a retry on the same commit/input succeeded.",
+      "groundTruth": {
+        "classification": "TEST_BUG",
+        "shouldRetry": false,
+        "shouldCreateBug": false
+      },
+      "actual": {
+        "classification": "TEST_BUG",
+        "confidence": 0.77,
+        "shouldRetry": false,
+        "originalShouldCreateBug": false,
+        "finalShouldCreateBug": false,
+        "policyAdjusted": false
+      },
+      "quality": {
+        "classification": "pass",
+        "rootCause": "pass",
+        "evidence": "pass",
+        "recommendedFix": "pass",
+        "historyUsage": "neutral",
+        "fabricatedEvidence": false,
+        "correlationConstruction": "pass",
+        "correlationTransport": "pass",
+        "correlationReasoning": "pass",
+        "knowledgeUsage": "not_applicable",
+        "knowledgeGrounding": "not_applicable",
+        "inferenceQuality": null
+      },
+      "ambiguity": {
+        "isAmbiguous": false,
+        "reason": null
+      },
+      "correlation": {
+        "applicable": true,
+        "observed": {
+          "browsers": ["chrome", "edge"],
+          "failedBrowsers": ["chrome", "edge"],
+          "passedBrowsers": [],
+          "primaryBrowser": "chrome",
+          "additionalFailedBrowsers": ["edge"],
+          "failureScope": "multi-browser",
+          "sameFailureSignature": false
+        }
+      },
+      "knowledge": {
+        "applicable": false,
+        "expectedPresentUnitIds": null,
+        "expectedAbsentUnitIds": null,
+        "expectedExactSelectedUnitIds": null,
+        "actualSelectedUnitIds": null
+      },
+      "metadata": {
+        "experiment": "41-revalidation-1",
+        "provider": "groq",
+        "model": "openai/gpt-oss-120b",
+        "PR": 45,
+        "workflowRun": 32119087170,
+        "controlledFailureSha": "59fd63d6ac3c34ca7f492775cf93be586b0cb082",
+        "revertSha": "a8bd33f235a544d817b22434385a8bda58a91520",
+        "revalidationOfExperiment": 41,
+        "providerAttempts": 2,
+        "firstAttemptError": "AI provider response was not valid JSON: Unterminated fractional number in JSON at position 259 (line 9 column 23)"
+      }
+    },
+    {
+      "id": "experiment-47-post-prompt-grounding-revalidation",
+      "scenario": "correlation-necessary-different-signatures",
+      "description": "Second independent post-prompt controlled re-validation of the Experiment #41 scenario (Roadmap #11 grounding prompt improvement, Roadmap #12 qualitative regression protection already merged): the exact historical controlled defect was reproduced byte-for-byte again, on a separate branch/PR from the first revalidation. The provider response succeeded on the first attempt, no retry required. The raw model recommendation for shouldCreateBug was true; the application-level policy correctly overrode it to false.",
+      "groundTruth": {
+        "classification": "TEST_BUG",
+        "shouldRetry": false,
+        "shouldCreateBug": false
+      },
+      "actual": {
+        "classification": "TEST_BUG",
+        "confidence": 0.85,
+        "shouldRetry": false,
+        "originalShouldCreateBug": true,
+        "finalShouldCreateBug": false,
+        "policyAdjusted": true
+      },
+      "quality": {
+        "classification": "pass",
+        "rootCause": "pass",
+        "evidence": "pass",
+        "recommendedFix": "pass",
+        "historyUsage": "neutral",
+        "fabricatedEvidence": false,
+        "correlationConstruction": "pass",
+        "correlationTransport": "pass",
+        "correlationReasoning": "pass",
+        "knowledgeUsage": "not_applicable",
+        "knowledgeGrounding": "not_applicable",
+        "inferenceQuality": null
+      },
+      "ambiguity": {
+        "isAmbiguous": false,
+        "reason": null
+      },
+      "correlation": {
+        "applicable": true,
+        "observed": {
+          "browsers": ["chrome", "edge"],
+          "failedBrowsers": ["chrome", "edge"],
+          "passedBrowsers": [],
+          "primaryBrowser": "chrome",
+          "additionalFailedBrowsers": ["edge"],
+          "failureScope": "multi-browser",
+          "sameFailureSignature": false
+        }
+      },
+      "knowledge": {
+        "applicable": false,
+        "expectedPresentUnitIds": null,
+        "expectedAbsentUnitIds": null,
+        "expectedExactSelectedUnitIds": null,
+        "actualSelectedUnitIds": null
+      },
+      "metadata": {
+        "experiment": "41-revalidation-2",
+        "provider": "groq",
+        "model": "openai/gpt-oss-120b",
+        "PR": 47,
+        "workflowRun": 32125240102,
+        "controlledFailureSha": "6666cc3411e5417ed61e691e96aa35cd4ce39c41",
+        "revertSha": "99945b15b78e2270b59aff80d6290475aa212989",
+        "revalidationOfExperiment": 41,
+        "providerAttempts": 1,
+        "firstAttemptError": null
+      }
+    },
+    {
+      "id": "K1-relevant-timeout-knowledge",
+      "scenario": "relevant-timeout-framework-knowledge",
+      "description": "Roadmap #16D K1: k1_timeout_knowledge_experiment.cy.js asserts visibility of a selector that deliberately never exists, via Cypress's normal cy.get()-retry-and-timeout .should() chain (a real, unmodified Cypress timeout, not simulated), identically across Chrome/Edge/Firefox.",
+      "groundTruth": {
+        "classification": "TEST_BUG",
+        "shouldRetry": false,
+        "shouldCreateBug": false
+      },
+      "actual": {
+        "classification": "TEST_BUG",
+        "confidence": 0.93,
+        "shouldRetry": false,
+        "originalShouldCreateBug": false,
+        "finalShouldCreateBug": false,
+        "policyAdjusted": false
+      },
+      "quality": {
+        "classification": "pass",
+        "rootCause": "pass",
+        "evidence": "partial",
+        "recommendedFix": "pass",
+        "historyUsage": "misleading",
+        "fabricatedEvidence": false,
+        "correlationConstruction": "pass",
+        "correlationTransport": "pass",
+        "correlationReasoning": "pass",
+        "knowledgeUsage": "pass",
+        "knowledgeGrounding": "pass",
+        "inferenceQuality": "partial"
+      },
+      "ambiguity": {
+        "isAmbiguous": false,
+        "reason": null
+      },
+      "correlation": {
+        "applicable": true,
+        "observed": {
+          "browsers": ["chrome", "edge", "firefox"],
+          "failedBrowsers": ["chrome", "edge", "firefox"],
+          "passedBrowsers": [],
+          "primaryBrowser": "chrome",
+          "additionalFailedBrowsers": ["edge", "firefox"],
+          "failureScope": "multi-browser",
+          "sameFailureSignature": true
+        }
+      },
+      "knowledge": {
+        "applicable": true,
+        "expectedPresentUnitIds": ["framework-cypress-retry-timeout-semantics", "qa-timeout-error-multiple-causes"],
+        "expectedAbsentUnitIds": ["cross-browser-differing-signature-caution"],
+        "expectedExactSelectedUnitIds": null,
+        "actualSelectedUnitIds": ["framework-cypress-retry-timeout-semantics", "qa-timeout-error-multiple-causes", "project-firefox-execution-environment-split"]
+      },
+      "metadata": {
+        "experiment": "K1",
+        "provider": "groq",
+        "model": "openai/gpt-oss-120b",
+        "PR": 56,
+        "workflowRun": 32231600413,
+        "controlledFailureSha": "176795c43678988055d8ca75483987c03c692b84",
+        "revertSha": "43c6ab4bc796bdfbbc0f2c5602b6e03493a31b8a"
+      }
+    },
+    {
+      "id": "K3-cross-browser-differing-signatures",
+      "scenario": "cross-browser-caution-differing-signatures",
+      "description": "Roadmap #16D K3: k3_cross_browser_signature_experiment.cy.js's Chrome/Edge and Firefox branches assert the same actual value against two different deliberately wrong expected values, producing the same TEST_BUG root-cause class with differing normalized failure signatures.",
+      "groundTruth": {
+        "classification": "TEST_BUG",
+        "shouldRetry": false,
+        "shouldCreateBug": false
+      },
+      "actual": {
+        "classification": "TEST_BUG",
+        "confidence": 0.97,
+        "shouldRetry": false,
+        "originalShouldCreateBug": true,
+        "finalShouldCreateBug": false,
+        "policyAdjusted": true
+      },
+      "quality": {
+        "classification": "pass",
+        "rootCause": "pass",
+        "evidence": "partial",
+        "recommendedFix": "pass",
+        "historyUsage": "misleading",
+        "fabricatedEvidence": false,
+        "correlationConstruction": "pass",
+        "correlationTransport": "pass",
+        "correlationReasoning": "pass",
+        "knowledgeUsage": "pass",
+        "knowledgeGrounding": "pass",
+        "inferenceQuality": "partial"
+      },
+      "ambiguity": {
+        "isAmbiguous": false,
+        "reason": null
+      },
+      "correlation": {
+        "applicable": true,
+        "observed": {
+          "browsers": ["chrome", "edge", "firefox"],
+          "failedBrowsers": ["chrome", "edge", "firefox"],
+          "passedBrowsers": [],
+          "primaryBrowser": "chrome",
+          "additionalFailedBrowsers": ["edge", "firefox"],
+          "failureScope": "multi-browser",
+          "sameFailureSignature": false
+        }
+      },
+      "knowledge": {
+        "applicable": true,
+        "expectedPresentUnitIds": ["cross-browser-differing-signature-caution"],
+        "expectedAbsentUnitIds": ["framework-cypress-retry-timeout-semantics", "qa-timeout-error-multiple-causes"],
+        "expectedExactSelectedUnitIds": null,
+        "actualSelectedUnitIds": ["project-firefox-execution-environment-split", "cross-browser-differing-signature-caution"]
+      },
+      "metadata": {
+        "experiment": "K3",
+        "provider": "groq",
+        "model": "openai/gpt-oss-120b",
+        "PR": 57,
+        "workflowRun": 32232629851,
+        "controlledFailureSha": "5a4e75ecc91ac5ef203fc657e20f1ba2fa4c613c",
+        "revertSha": "545a4801e56a52c68beaf063c97bc4ba8dff729f"
+      }
+    },
+    {
+      "id": "K4-firefox-knowledge-vs-direct-evidence",
+      "scenario": "project-knowledge-subordinate-to-evidence",
+      "description": "Roadmap #16D K4: k4_firefox_knowledge_experiment.cy.js's Firefox-only branch deliberately asserts a wrong expected value; Chrome and Edge pass. Tests whether project-specific Firefox execution-environment knowledge is correctly kept subordinate to direct current-run assertion evidence.",
+      "groundTruth": {
+        "classification": "TEST_BUG",
+        "shouldRetry": false,
+        "shouldCreateBug": false
+      },
+      "actual": {
+        "classification": "TEST_BUG",
+        "confidence": 0.97,
+        "shouldRetry": false,
+        "originalShouldCreateBug": false,
+        "finalShouldCreateBug": false,
+        "policyAdjusted": false
+      },
+      "quality": {
+        "classification": "pass",
+        "rootCause": "pass",
+        "evidence": "pass",
+        "recommendedFix": "pass",
+        "historyUsage": "neutral",
+        "fabricatedEvidence": false,
+        "correlationConstruction": "pass",
+        "correlationTransport": "pass",
+        "correlationReasoning": "pass",
+        "knowledgeUsage": "pass",
+        "knowledgeGrounding": "pass",
+        "inferenceQuality": "not_applicable"
+      },
+      "ambiguity": {
+        "isAmbiguous": false,
+        "reason": null
+      },
+      "correlation": {
+        "applicable": true,
+        "observed": {
+          "browsers": ["chrome", "edge", "firefox"],
+          "failedBrowsers": ["firefox"],
+          "passedBrowsers": ["chrome", "edge"],
+          "primaryBrowser": "firefox",
+          "additionalFailedBrowsers": [],
+          "failureScope": "single-browser",
+          "sameFailureSignature": null
+        }
+      },
+      "knowledge": {
+        "applicable": true,
+        "expectedPresentUnitIds": ["project-firefox-execution-environment-split"],
+        "expectedAbsentUnitIds": ["cross-browser-differing-signature-caution", "framework-cypress-retry-timeout-semantics", "qa-timeout-error-multiple-causes"],
+        "expectedExactSelectedUnitIds": ["project-firefox-execution-environment-split"],
+        "actualSelectedUnitIds": ["project-firefox-execution-environment-split"]
+      },
+      "metadata": {
+        "experiment": "K4",
+        "provider": "groq",
+        "model": "openai/gpt-oss-120b",
+        "PR": 55,
+        "workflowRun": 32230279124,
+        "controlledFailureSha": "8431ccd332a7995266c6657cedc53b49128ad5eb",
+        "revertSha": "c3cc48dae4b51cef58bb372d97307e51be3a38f6"
+      }
+    },
+    {
+      "id": "K5-zero-relevant-knowledge",
+      "scenario": "true-zero-knowledge-control",
+      "description": "Roadmap #16D K5: k5_zero_relevant_knowledge_experiment.cy.js's Chrome-only branch deliberately asserts a wrong expected value; Edge and Firefox pass. Tests the true full-context relevantKnowledge=[] control case, using the complete aggregated context (including collect-context.js's always-attached KNOWN_PROJECT_CONSTRAINTS, whose text literally contains 'Firefox').",
+      "groundTruth": {
+        "classification": "TEST_BUG",
+        "shouldRetry": false,
+        "shouldCreateBug": false
+      },
+      "actual": {
+        "classification": "TEST_BUG",
+        "confidence": 0.96,
+        "shouldRetry": false,
+        "originalShouldCreateBug": false,
+        "finalShouldCreateBug": false,
+        "policyAdjusted": false
+      },
+      "quality": {
+        "classification": "pass",
+        "rootCause": "pass",
+        "evidence": "pass",
+        "recommendedFix": "pass",
+        "historyUsage": "neutral",
+        "fabricatedEvidence": false,
+        "correlationConstruction": "pass",
+        "correlationTransport": "pass",
+        "correlationReasoning": "pass",
+        "knowledgeUsage": "not_applicable",
+        "knowledgeGrounding": "not_applicable",
+        "inferenceQuality": "not_applicable"
+      },
+      "ambiguity": {
+        "isAmbiguous": false,
+        "reason": null
+      },
+      "correlation": {
+        "applicable": true,
+        "observed": {
+          "browsers": ["chrome", "edge", "firefox"],
+          "failedBrowsers": ["chrome"],
+          "passedBrowsers": ["edge", "firefox"],
+          "primaryBrowser": "chrome",
+          "additionalFailedBrowsers": [],
+          "failureScope": "single-browser",
+          "sameFailureSignature": null
+        }
+      },
+      "knowledge": {
+        "applicable": true,
+        "expectedPresentUnitIds": [],
+        "expectedAbsentUnitIds": ["project-firefox-execution-environment-split", "cross-browser-differing-signature-caution", "framework-cypress-retry-timeout-semantics", "qa-timeout-error-multiple-causes"],
+        "expectedExactSelectedUnitIds": [],
+        "actualSelectedUnitIds": []
+      },
+      "metadata": {
+        "experiment": "K5",
+        "provider": "groq",
+        "model": "openai/gpt-oss-120b",
+        "PR": 58,
+        "workflowRun": 32233934887,
+        "controlledFailureSha": "9c10f1844a2d9ca6d30542c77a620aff03c5ce73",
+        "revertSha": "cf1d40f2f4f1fbd22f94ad94603151b29a95b1b7"
+      }
+    }
+  ],
+  "historicalObservations": [
+    {
+      "id": "K2-irrelevant-knowledge-exclusion",
+      "summary": "Original predeclared relevantKnowledge=[] hypothesis FAILED; target timeout/retry exclusion SUCCEEDED; the two units actually selected (cross-browser-differing-signature-caution, project-firefox-execution-environment-split) were semantically legitimate for the realized sameFailureSignature=false, all-three-browsers-failed context; the run exposed a genuine cross-browser selector overbreadth defect (the unit matched sameFailureSignature=true/null/single-browser contexts too, not just false), later diagnosed and fixed via PR #54.",
+      "reason": "Historical-only: the original exact-[] hypothesis was falsified by legitimate dynamic knowledge selection, so this cannot be scored as an ordinary clean baseline sample without either rewriting the hypothesis after the fact or misrepresenting a real (later-fixed) selector defect as a clean pass. Preserved as frozen provenance instead of a scorable sample - see dataset-v5-schema.js's module comment.",
+      "metadata": {
+        "experiment": "K2",
+        "provider": "groq",
+        "model": "openai/gpt-oss-120b",
+        "PR": 53,
+        "workflowRun": 32164012748,
+        "controlledFailureSha": "a5e453dbb824ed54e84b44978cadc6ad3727cedb",
+        "revertSha": "e58c6cbf8314f789b5a2e91aa3875d846bb01f5b",
+        "originalHypothesis": "relevantKnowledge=[]",
+        "hypothesisOutcome": "FAILED",
+        "targetExclusionOutcome": "SUCCEEDED",
+        "actualSelectedUnitIds": ["cross-browser-differing-signature-caution", "project-firefox-execution-environment-split"],
+        "sameFailureSignature": false,
+        "selectorDefectExposed": true,
+        "selectorDefectFixedByPR": 54
+      }
+    }
+  ]
+}
