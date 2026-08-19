@@ -34,7 +34,7 @@ const path = require("path");
 const { MODEL, PROVIDER } = require("./config");
 const { CLASSIFICATIONS, buildSystemPrompt, buildUserPrompt } = require("./qa-agent-prompt");
 const { createProvider } = require("./providers");
-const { normalizeProviderError } = require("./providers/provider-error");
+const { PROVIDER_ERROR_CODES, normalizeProviderError } = require("./providers/provider-error");
 const { validateProvider, validateProviderResponse } = require("./providers/provider-contract");
 const { applyAgentPolicy } = require("./agent-policy");
 const { loadKnowledgeUnits } = require("./knowledge/loader");
@@ -215,6 +215,45 @@ function stripCodeFences(text) {
   return fenceMatch ? fenceMatch[1].trim() : trimmed;
 }
 
+// Fixed, allowlisted messages for persisted provider-error provenance
+// (Roadmap #18.3, hardened) - keyed on PROVIDER_ERROR_CODES, the same
+// generic vocabulary the retry loop already reasons about. Deliberately
+// NOT derived from any underlying err.message/err.cause: a provider's own
+// message (e.g. GroqProvider's NETWORK-path text, which embeds whatever
+// the underlying fetch() exception says) or a future provider adapter's
+// raw SDK exception text is not guaranteed to be free of request/response
+// detail, so none of it may reach a persisted artifact - only which fixed,
+// pre-approved category occurred. err.code itself (not this map) remains
+// the precise machine-readable diagnostic.
+const SAFE_PROVIDER_ERROR_MESSAGES = {
+  [PROVIDER_ERROR_CODES.AUTH]: "Provider authentication failed",
+  [PROVIDER_ERROR_CODES.RATE_LIMIT]: "Provider rate limit exceeded",
+  [PROVIDER_ERROR_CODES.TIMEOUT]: "Provider request timed out",
+  [PROVIDER_ERROR_CODES.NETWORK]: "Provider network request failed",
+  [PROVIDER_ERROR_CODES.INVALID_RESPONSE]: "Provider returned an invalid response",
+  [PROVIDER_ERROR_CODES.CONFIGURATION]: "Provider configuration error",
+  [PROVIDER_ERROR_CODES.UNKNOWN]: "Unknown provider error",
+};
+
+// Safe, provider-neutral summary of a ProviderError for persistence onto
+// ai-report.json - code/message/retryable only, exactly mirroring the
+// runtime shape callers already expect, but message is now looked up from
+// the fixed allowlist above rather than copied from the error itself. An
+// unrecognized code (should never happen given PROVIDER_ERROR_CODES is the
+// only vocabulary ProviderError uses, but checked defensively) falls back
+// to the same fixed UNKNOWN message rather than ever touching err.message.
+// This function only changes what gets PERSISTED - the live ProviderError
+// instance (and the AnalyzerError thrown on ultimate failure, logged to
+// the console) is untouched and keeps its original, richer message.
+function summarizeProviderError(err) {
+  if (!err) return null;
+  return {
+    code: err.code,
+    message: SAFE_PROVIDER_ERROR_MESSAGES[err.code] || SAFE_PROVIDER_ERROR_MESSAGES[PROVIDER_ERROR_CODES.UNKNOWN],
+    retryable: err.retryable,
+  };
+}
+
 // Bounded retry around a single provider.analyze() call. Providers signal
 // "this specific failure is worth retrying" via ProviderError's
 // `retryable` flag (see providers/provider-error.js) - this orchestration
@@ -238,8 +277,18 @@ async function runProviderAnalysis(
 
   let raw;
   let lastErr;
+  // Roadmap #18.3 provenance - purely additive bookkeeping alongside the
+  // existing loop, never influencing retry/break decisions (those still
+  // depend only on `attempt`/`lastErr.retryable`, exactly as before).
+  // `providerAttempts` is the 1-based attempt count reached so far;
+  // `firstErr` captures only the FIRST catch's normalized error and is
+  // never overwritten by a later attempt's error, so a multi-attempt
+  // sequence's provenance always points at what actually went wrong first.
+  let providerAttempts = 0;
+  let firstErr = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    providerAttempts = attempt;
     try {
       const response = await provider.analyze({ systemPrompt, userPrompt });
       validateProviderResponse(response);
@@ -248,6 +297,7 @@ async function runProviderAnalysis(
       break;
     } catch (err) {
       lastErr = normalizeProviderError(err);
+      if (!firstErr) firstErr = lastErr;
       if (attempt === maxAttempts || !lastErr.retryable) break;
       await sleep(retryDelaysMs[attempt - 1] ?? retryDelaysMs[retryDelaysMs.length - 1]);
     }
@@ -273,7 +323,11 @@ async function runProviderAnalysis(
     throw new AnalyzerError('AI provider response did not match the expected shape (missing "results" array).');
   }
 
-  return { results: parsed.results };
+  return {
+    results: parsed.results,
+    providerAttempts,
+    firstAttemptError: summarizeProviderError(firstErr),
+  };
 }
 
 // Builds the full ai-report.json object for a context that has at least
@@ -303,7 +357,7 @@ async function buildFailureReport(
   // unconditional assignment, unlike history's `if (history)` guard.
   context.relevantKnowledge = relevantKnowledge;
 
-  const { results } = await runProviderAnalysis(provider, context);
+  const { results, providerAttempts, firstAttemptError } = await runProviderAnalysis(provider, context);
 
   if (results.length !== failedTests.length) {
     throw new AnalyzerError(
@@ -347,8 +401,14 @@ async function buildFailureReport(
     // business asserting its own name; the application already knows it).
     // Kept as its own object rather than replacing the existing top-level
     // generatedAt/model fields so format-pr-comment.js's existing
-    // `report.model` read keeps working unchanged.
-    analysis: { provider: provider.name || "unknown", generatedAt },
+    // `report.model` read keeps working unchanged. providerAttempts/
+    // firstAttemptError (Roadmap #18.3) are the same values
+    // runProviderAnalysis already computed internally - surfaced here
+    // rather than recomputed, and only ever present for a report that
+    // reaches this point at all (a terminal provider failure throws
+    // before buildFailureReport ever returns, so there is no report to
+    // attach this provenance to in that case - see runProviderAnalysis).
+    analysis: { provider: provider.name || "unknown", generatedAt, providerAttempts, firstAttemptError },
     sourceContext: pickSourceContext(context),
     // Same compact counts the provider saw, kept on the report for
     // traceability - not the raw per-run data (there isn't any to keep;
@@ -422,6 +482,7 @@ module.exports = {
   validateAnalysisItem,
   recommendsArbitraryWait,
   stripCodeFences,
+  summarizeProviderError,
   pickSourceContext,
   readHistory,
   computeRelevantKnowledge,

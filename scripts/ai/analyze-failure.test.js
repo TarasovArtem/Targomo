@@ -10,10 +10,11 @@ const {
   validateAnalysisItem,
   recommendsArbitraryWait,
   stripCodeFences,
+  summarizeProviderError,
   readHistory,
   computeRelevantKnowledge,
 } = require("./analyze-failure");
-const { ProviderError, PROVIDER_ERROR_CODES } = require("./providers/provider-error");
+const { ProviderError, PROVIDER_ERROR_CODES, normalizeProviderError } = require("./providers/provider-error");
 const { MockProvider } = require("./providers/mock-provider");
 const { CLASSIFICATIONS } = require("./qa-agent-prompt");
 const { loadKnowledgeUnits } = require("./knowledge/loader");
@@ -249,6 +250,185 @@ test("runProviderAnalysis: invalid JSON in the response produces a clear error, 
   await assert.rejects(() => runProviderAnalysis(provider, context, { sleep: noopSleep }), /not valid JSON/);
 });
 
+// --- Roadmap #18.3: provider-attempt provenance ----------------------------
+//
+// Purely additive bookkeeping alongside the existing retry loop above - none
+// of these tests change when/why a retry happens, only what the already-
+// existing loop state exposes on success. providerAttempts is the 1-based
+// count of provider.analyze() calls actually made; firstAttemptError is the
+// normalized error from the FIRST failed attempt only, never overwritten by
+// a later attempt's error.
+
+test("runProviderAnalysis: providerAttempts is 1 and firstAttemptError is null on immediate success", async () => {
+  const { providerAttempts, firstAttemptError } = await runProviderAnalysis(providerReturning([goodItem()]), context);
+  assert.equal(providerAttempts, 1);
+  assert.equal(firstAttemptError, null);
+});
+
+test("runProviderAnalysis: one retryable failure then success - providerAttempts is 2, firstAttemptError describes attempt 1 only, using the fixed safe message for its code", async () => {
+  const err = new ProviderError("Service Unavailable", { code: PROVIDER_ERROR_CODES.UNKNOWN, retryable: true });
+  const provider = providerFailingThenSucceeding(1, err, [goodItem()]);
+  const { providerAttempts, firstAttemptError } = await runProviderAnalysis(provider, context, {
+    sleep: noopSleep,
+    maxAttempts: 3,
+  });
+  assert.equal(provider.calls, 2);
+  assert.equal(providerAttempts, 2);
+  assert.deepEqual(firstAttemptError, { code: err.code, message: "Unknown provider error", retryable: true });
+});
+
+test("runProviderAnalysis: two retryable failures then success - providerAttempts is 3, firstAttemptError still references the FIRST failure's code/message, not the second's", async () => {
+  let callCount = 0;
+  const firstError = new ProviderError("first failure", { code: PROVIDER_ERROR_CODES.RATE_LIMIT, retryable: true });
+  const secondError = new ProviderError("second failure", { code: PROVIDER_ERROR_CODES.TIMEOUT, retryable: true });
+  const provider = {
+    analyze: async () => {
+      callCount += 1;
+      if (callCount === 1) throw firstError;
+      if (callCount === 2) throw secondError;
+      return JSON.stringify({ results: [goodItem()] });
+    },
+  };
+  const { providerAttempts, firstAttemptError } = await runProviderAnalysis(provider, context, {
+    sleep: noopSleep,
+    maxAttempts: 3,
+  });
+  assert.equal(callCount, 3);
+  assert.equal(providerAttempts, 3);
+  assert.deepEqual(firstAttemptError, { code: firstError.code, message: "Provider rate limit exceeded", retryable: true });
+  assert.notEqual(
+    firstAttemptError.message,
+    "Provider request timed out",
+    "firstAttemptError must not be replaced by the second failure's code/message"
+  );
+});
+
+test("runProviderAnalysis: firstAttemptError is a safe normalized summary - only code/message/retryable, never .cause, a stack, or any request/credential detail", async () => {
+  const causeWithSecrets = new Error("underlying network error carrying request internals");
+  const err = new ProviderError("Service Unavailable", {
+    code: PROVIDER_ERROR_CODES.NETWORK,
+    retryable: true,
+    cause: causeWithSecrets,
+  });
+  const provider = providerFailingThenSucceeding(1, err, [goodItem()]);
+  const { firstAttemptError } = await runProviderAnalysis(provider, context, { sleep: noopSleep, maxAttempts: 3 });
+
+  assert.deepEqual(Object.keys(firstAttemptError).sort(), ["code", "message", "retryable"]);
+  assert.equal("cause" in firstAttemptError, false);
+  assert.equal(JSON.stringify(firstAttemptError).includes("underlying network error"), false);
+});
+
+// --- Roadmap #18.3 hardening: allowlisted, provider-neutral persisted message ---
+//
+// summarizeProviderError()'s persisted `message` must never be derived from
+// err.message/err.cause/a real provider's own error text - only from a
+// fixed, allowlisted lookup keyed on the generic PROVIDER_ERROR_CODES value.
+// This protects against a secret, internal URL, or SDK-specific detail that
+// happens to sit anywhere in an underlying error's text (not just at a
+// truncation boundary) ever reaching a persisted artifact.
+
+test("summarizeProviderError: an arbitrary Error's sensitive-looking message, once normalized exactly as the real retry loop would, never survives into the safe summary", () => {
+  // An arbitrary (non-ProviderError) throw always normalizes to
+  // retryable=false (see normalizeProviderError()), so under the real
+  // retry loop it can only ever be a TERMINAL failure - never a first
+  // failure followed by a successful retry - which means it can never
+  // actually reach a persisted report at all (see the dedicated
+  // no-persistence-on-terminal-failure test below). This test proves the
+  // narrower, structural claim directly at the summarization boundary
+  // itself: even if such an error's normalized form were ever summarized,
+  // its sensitive text still could not survive into the safe summary.
+  const sensitiveErr = new Error("SECRET=https://internal.example/token=super-secret-value");
+  const normalized = normalizeProviderError(sensitiveErr);
+  const summary = summarizeProviderError(normalized);
+
+  const serialized = JSON.stringify(summary);
+  assert.equal(serialized.includes("super-secret-value"), false);
+  assert.equal(serialized.includes("internal.example"), false);
+  assert.equal(serialized.includes("SECRET="), false);
+  assert.deepEqual(summary, { code: PROVIDER_ERROR_CODES.UNKNOWN, message: "Unknown provider error", retryable: false });
+});
+
+test("runProviderAnalysis: an arbitrary Error is always terminal (never retried), so it can never actually reach a persisted report in the first place - the safety net above is defense-in-depth, not the only protection", async () => {
+  const sensitiveErr = new Error("SECRET=https://internal.example/token=super-secret-value");
+  const provider = providerFailingThenSucceeding(99, sensitiveErr, [goodItem()]);
+  await assert.rejects(() => runProviderAnalysis(provider, context, { sleep: noopSleep, maxAttempts: 3 }));
+  assert.equal(provider.calls, 1, "a non-retryable first failure must never be retried, so no later successful attempt - and no report - can ever occur");
+});
+
+test("runProviderAnalysis: a NETWORK-coded ProviderError carrying a sensitive-looking underlying message persists only the fixed safe NETWORK summary", async () => {
+  const err = new ProviderError("request failed for https://internal.example?token=abc123", {
+    code: PROVIDER_ERROR_CODES.NETWORK,
+    retryable: true,
+  });
+  const provider = providerFailingThenSucceeding(1, err, [goodItem()]);
+  const { providerAttempts, firstAttemptError } = await runProviderAnalysis(provider, context, {
+    sleep: noopSleep,
+    maxAttempts: 3,
+  });
+
+  assert.equal(providerAttempts, 2);
+  assert.equal(firstAttemptError.code, PROVIDER_ERROR_CODES.NETWORK);
+  assert.equal(firstAttemptError.retryable, true);
+  assert.equal(firstAttemptError.message, "Provider network request failed");
+
+  const serialized = JSON.stringify(firstAttemptError);
+  assert.equal(serialized.includes("internal.example"), false);
+  assert.equal(serialized.includes("abc123"), false);
+  assert.equal(serialized.includes("request failed for"), false);
+});
+
+test("runProviderAnalysis: two different NETWORK raw messages produce the identical persisted safe message - proves persistence is classification-based, not text-based", async () => {
+  const rawMessages = ["fetch failed", "request to internal-host failed"];
+  const persistedMessages = [];
+
+  for (const raw of rawMessages) {
+    const err = new ProviderError(raw, { code: PROVIDER_ERROR_CODES.NETWORK, retryable: true });
+    const provider = providerFailingThenSucceeding(1, err, [goodItem()]);
+    const { firstAttemptError } = await runProviderAnalysis(provider, context, { sleep: noopSleep, maxAttempts: 3 });
+    persistedMessages.push(firstAttemptError.message);
+  }
+
+  assert.equal(persistedMessages[0], persistedMessages[1]);
+  assert.equal(persistedMessages[0], "Provider network request failed");
+});
+
+test("summarizeProviderError: every PROVIDER_ERROR_CODES value maps to its fixed, provider-neutral message - table-driven", () => {
+  const expected = {
+    [PROVIDER_ERROR_CODES.AUTH]: "Provider authentication failed",
+    [PROVIDER_ERROR_CODES.RATE_LIMIT]: "Provider rate limit exceeded",
+    [PROVIDER_ERROR_CODES.TIMEOUT]: "Provider request timed out",
+    [PROVIDER_ERROR_CODES.NETWORK]: "Provider network request failed",
+    [PROVIDER_ERROR_CODES.INVALID_RESPONSE]: "Provider returned an invalid response",
+    [PROVIDER_ERROR_CODES.CONFIGURATION]: "Provider configuration error",
+    [PROVIDER_ERROR_CODES.UNKNOWN]: "Unknown provider error",
+  };
+
+  for (const code of Object.values(PROVIDER_ERROR_CODES)) {
+    const err = new ProviderError("irrelevant - must never be persisted", { code, retryable: false });
+    const summary = summarizeProviderError(err);
+    assert.equal(summary.code, code);
+    assert.equal(summary.message, expected[code], `unexpected safe message for code ${code}`);
+    assert.equal(summary.message.includes("irrelevant"), false);
+  }
+});
+
+test("summarizeProviderError: an unrecognized/missing code falls back to the fixed UNKNOWN message rather than ever reading err.message", () => {
+  const err = new ProviderError("should never be persisted", { code: "NOT_A_REAL_CODE", retryable: false });
+  assert.deepEqual(summarizeProviderError(err), { code: "NOT_A_REAL_CODE", message: "Unknown provider error", retryable: false });
+});
+
+test("runProviderAnalysis: a non-empty response containing malformed QA JSON still makes exactly one provider call - no semantic retry was added", async () => {
+  let calls = 0;
+  const provider = {
+    analyze: async () => {
+      calls += 1;
+      return "this is not json at all";
+    },
+  };
+  await assert.rejects(() => runProviderAnalysis(provider, context, { sleep: noopSleep, maxAttempts: 3 }), /not valid JSON/);
+  assert.equal(calls, 1, "malformed QA JSON must not trigger a retry - that behavior is intentionally out of scope for #18.3");
+});
+
 test("readHistory: returns null when reports/ai/history.json doesn't exist", (t) => {
   fs.rmSync(path.dirname(HISTORY_FILE), { recursive: true, force: true });
   t.after(() => fs.rmSync(path.dirname(HISTORY_FILE), { recursive: true, force: true }));
@@ -324,6 +504,31 @@ test("buildFailureReport: a provider without a .name still produces a report, fa
   const provider = { analyze: async () => JSON.stringify({ results: [goodItem()] }) };
   const report = await buildFailureReport(context, { provider, history: null, relevantKnowledge: [] });
   assert.equal(report.analysis.provider, "unknown");
+});
+
+// --- Roadmap #18.3: provider-attempt provenance on the persisted report ---
+//
+// LEVEL 2 (report plumbing) only: does runProviderAnalysis()'s
+// providerAttempts/firstAttemptError land under report.analysis at all?
+// LEVEL 1 (retry orchestration itself - attempt counting for 1/2/3
+// attempts, first-error-only capture, safe-summary mapping) is already
+// exhaustively covered above at the runProviderAnalysis level, with
+// noopSleep, at zero real-time cost. buildFailureReport() has no way to
+// inject a zero-delay sleep (it calls runProviderAnalysis(provider,
+// context) with no options), so a buildFailureReport-level test that
+// forces an actual retry would pay a real ~500ms backoff wait for
+// coverage that already exists elsewhere at zero cost - not worth it,
+// and production code is intentionally not changed just to avoid it. The
+// single immediate-success case below is sufficient to prove the plumbing
+// itself (a plain destructure-and-reassign with no attempt-count-dependent
+// branching), together with policy/classification fields.
+test("buildFailureReport: analysis.providerAttempts is 1 and analysis.firstAttemptError is null for a first-attempt-success report", async () => {
+  const provider = new MockProvider();
+  const report = await buildFailureReport(context, { provider, history: null, relevantKnowledge: [] });
+  assert.equal(report.analysis.providerAttempts, 1);
+  assert.equal(report.analysis.firstAttemptError, null);
+  assert.equal(report.results.length, 1);
+  assert.ok(CLASSIFICATIONS.includes(report.results[0].classification));
 });
 
 // --- multi-browser correlation passthrough (PR #33) -------------------------
