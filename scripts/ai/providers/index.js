@@ -12,6 +12,7 @@
 
 const { MockProvider } = require("./mock-provider");
 const { GroqProvider } = require("./groq-provider");
+const { GeminiProvider } = require("./gemini-provider");
 const { ProviderError, PROVIDER_ERROR_CODES } = require("./provider-error");
 const { validateProvider } = require("./provider-contract");
 const { PROVIDER: RESOLVED_AI_PROVIDER } = require("../config");
@@ -32,6 +33,12 @@ function createProvider(providerName = RESOLVED_AI_PROVIDER) {
       // a ProviderError right here, at creation time, not on the first
       // analyze() call.
       provider = new GroqProvider();
+      break;
+    case "gemini":
+      // Same generic-config pattern as "groq" above (see
+      // gemini-provider.js's constructor) - a missing key/model surfaces
+      // as a ProviderError right here, at creation time.
+      provider = new GeminiProvider();
       break;
     default:
       // No silent fallback to a real provider for an unrecognized name -
