@@ -618,3 +618,105 @@ test("#16B.1: corrected tags no longer contain the overbroad 'cypress'/'assertio
   assert.deepEqual(frameworkUnitReal.tags, ["retry", "retry-ability", "timeout"]);
   assert.deepEqual(timeoutUnitReal.tags, ["timed out retrying", "timeout", "cy.get"]);
 });
+
+// --- Roadmap #16D.1: cross-browser differing-signature precision ----------
+//
+// Experiment K2 found that cross-browser-differing-signature-caution's old
+// tags ("sameFailureSignature", "signature", "cross-browser") were naked
+// substrings of buildSignalText()'s unconditional `sameFailureSignature=${...}`
+// token, so the unit matched whenever browserCorrelation existed at all -
+// true, false, null, or even a single-browser run - never actually gated on
+// the statement's own condition (differing signatures, i.e. false). The
+// fix is a knowledge-curation correction only (selector.js untouched): the
+// unit's sole tag is now the literal "sameFailureSignature=false" token,
+// which is a substring of the signal text only when the real correlation
+// value is false.
+
+function multiBrowserContext(browsers, failedBrowsers, sameFailureSignature) {
+  return makeContext({
+    browserCorrelation: {
+      browsers,
+      failedBrowsers,
+      passedBrowsers: browsers.filter((b) => !failedBrowsers.includes(b)),
+      primaryBrowser: failedBrowsers[0] || null,
+      additionalFailedBrowsers: failedBrowsers.slice(1),
+      failureScope: failedBrowsers.length > 1 ? "multi-browser" : "single-browser",
+      sameFailureSignature,
+    },
+  });
+}
+
+test("#16D.1 1: sameFailureSignature=false selects cross-browser-differing-signature-caution (production corpus)", () => {
+  const context = multiBrowserContext(["chrome", "edge"], ["chrome", "edge"], false);
+  assert.match(realSelectedIds(context).join(","), /cross-browser-differing-signature-caution/);
+});
+
+test("#16D.1 2: sameFailureSignature=true does NOT select cross-browser-differing-signature-caution", () => {
+  const context = multiBrowserContext(["chrome", "edge"], ["chrome", "edge"], true);
+  assert.doesNotMatch(realSelectedIds(context).join(","), /cross-browser-differing-signature-caution/);
+});
+
+test("#16D.1 3: sameFailureSignature=null does NOT select cross-browser-differing-signature-caution", () => {
+  const context = multiBrowserContext(["chrome", "edge"], ["chrome", "edge"], null);
+  assert.doesNotMatch(realSelectedIds(context).join(","), /cross-browser-differing-signature-caution/);
+});
+
+test("#16D.1 4: a single-browser failure does NOT select cross-browser-differing-signature-caution", () => {
+  const context = multiBrowserContext(["chrome"], ["chrome"], null);
+  assert.doesNotMatch(realSelectedIds(context).join(","), /cross-browser-differing-signature-caution/);
+});
+
+test("#16D.1 5: generic multi-browser scope alone (no sameFailureSignature evidence) does NOT select the unit", () => {
+  // failureScope is "multi-browser" and correlation exists, but the
+  // signature comparison itself was never established (undefined, not
+  // false) - the old "cross-browser" tag fired here; the corrected tag
+  // must not.
+  const context = makeContext({
+    browserCorrelation: {
+      browsers: ["chrome", "edge"],
+      failedBrowsers: ["chrome", "edge"],
+      passedBrowsers: [],
+      primaryBrowser: "chrome",
+      additionalFailedBrowsers: ["edge"],
+      failureScope: "multi-browser",
+    },
+  });
+  assert.doesNotMatch(realSelectedIds(context).join(","), /cross-browser-differing-signature-caution/);
+});
+
+test("#16D.1 6: sameFailureSignature=false still selects the unit across Chrome/Edge/Firefox combinations", () => {
+  const combos = [
+    ["chrome", "edge"],
+    ["chrome", "firefox"],
+    ["edge", "firefox"],
+    ["chrome", "edge", "firefox"],
+  ];
+  for (const failedBrowsers of combos) {
+    const context = multiBrowserContext(failedBrowsers, failedBrowsers, false);
+    assert.match(
+      realSelectedIds(context).join(","),
+      /cross-browser-differing-signature-caution/,
+      `expected selection for failedBrowsers=${failedBrowsers.join("+")}`
+    );
+  }
+});
+
+test("#16D.1 7: selection of the corrected unit is deterministic across repeated calls", () => {
+  const context = multiBrowserContext(["chrome", "edge"], ["chrome", "edge"], false);
+  const runs = Array.from({ length: 5 }, () => realSelectedIds(context));
+  for (const run of runs) assert.deepEqual(run, runs[0]);
+  assert.ok(runs[0].includes("cross-browser-differing-signature-caution"));
+});
+
+test("#16D.1: corrected tag is the precise 'sameFailureSignature=false' literal, not the old broad tag set", () => {
+  const crossBrowserUnitReal = realUnits.find((u) => u.id === "cross-browser-differing-signature-caution");
+  assert.deepEqual(crossBrowserUnitReal.tags, ["sameFailureSignature=false"]);
+});
+
+test("#16D.1: statement/appliesTo/priority/category/id are unchanged by the tag correction", () => {
+  const crossBrowserUnitReal = realUnits.find((u) => u.id === "cross-browser-differing-signature-caution");
+  assert.equal(crossBrowserUnitReal.category, "CROSS_BROWSER");
+  assert.equal(crossBrowserUnitReal.priority, 8);
+  assert.deepEqual(crossBrowserUnitReal.appliesTo, { browsers: null, frameworks: ["cypress"] });
+  assert.match(crossBrowserUnitReal.statement, /differing failure signatures/);
+});
