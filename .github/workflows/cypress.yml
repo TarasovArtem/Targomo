@@ -103,6 +103,24 @@ jobs:
       - name: Run QA Agent regression comparison v2
         run: npm run eval:regression:v2
 
+      - name: Run QA Agent evaluation v3
+        run: npm run eval:ai:v3
+
+      - name: Run QA Agent regression comparison v3
+        run: npm run eval:regression:v3
+
+      - name: Run QA Agent evaluation v4
+        run: npm run eval:ai:v4
+
+      - name: Run QA Agent regression comparison v4
+        run: npm run eval:regression:v4
+
+      - name: Run QA Agent evaluation v5
+        run: npm run eval:ai:v5
+
+      - name: Run QA Agent regression comparison v5
+        run: npm run eval:regression:v5
+
   cypress-tests:
     name: Cypress - ${{ matrix.browser }}
     runs-on: ubuntu-latest
