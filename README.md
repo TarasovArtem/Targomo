@@ -210,7 +210,7 @@ Required branch-protection checks are `Unit tests`, `Cypress - chrome`, and `Cyp
 
 ## Current Portability Status
 
-This section reflects the Roadmap #19.1 architecture audit plus Roadmap #19.2's completed work - it states current reality plainly, neither overclaiming nor understating it.
+This section reflects the Roadmap #19.1 architecture audit plus Roadmap #19.2 and #19.3's completed work - it states current reality plainly, neither overclaiming nor understating it.
 
 **Today, this repository is wired to exactly one project and one E2E framework:**
 
@@ -236,25 +236,28 @@ The system works correctly for this scope today - the limitations below matter f
 - The system prompt's persona sentence no longer hardcodes the SUT's identity - it renders whichever `ProjectProfile` it is given
 - Stable project-specific constraints are no longer owned by the collector - they come from `ProjectProfile`
 
+**Resolved by Roadmap #19.3 (previously listed here as open):**
+
+- The `PROJECT_VERIFIED` knowledge unit now carries an explicit, machine-readable project scope (`appliesTo.projects`) - a different (or unknown) current project can no longer have it selected for its own failures
+- Flaky-test History now carries the same stable `projectId` provenance, checked before History can influence an analysis - History collected for one project can no longer influence a different (or unscoped) project's analysis
+
 **Still project- or framework-bound today:**
 
-- The one `PROJECT_VERIFIED` knowledge unit has no explicit, machine-readable project scope - a future second project could, in principle, have this project's verified fact selected for its own failures
-- Flaky-test history is scoped by this repository's own workflow-file/job-name convention, not an explicit project/framework namespace
 - Explicit framework identity is not yet produced; the system prompt's persona sentence still names "Cypress" directly, unconditionally
 - Failure collection (`collect-context.js`) parses Cypress/mochawesome report output directly - there is no separate framework-adapter boundary yet
 - Knowledge selection silently defaults to a Cypress framework assumption when no framework is specified (which is always, today)
+- No second production project exists yet to prove the isolation boundary against real multi-project traffic - Roadmap #19.4 is a fully offline, synthetic proof, not a live second project
 
-Project portability is **improved, not complete**: explicit identity and ownership now exist, but project-level isolation isn't finished until project-scoped knowledge/history and a second-project proof land (Roadmap #19.3/#19.4). Framework portability has not started. This is why the rest of Roadmap #19 exists - see below.
+Project portability now has both **stable identity and enforced isolation**: `ProjectProfile.id` is the single source of project identity, and both project-scoped Knowledge and project-namespaced History refuse to let one project's context influence another's analysis. What remains is the second half of Roadmap #19: a synthetic second-project proof (#19.4) and framework portability, which has not started. This is why the rest of Roadmap #19 exists - see below.
 
 ## Known Architectural Boundaries
 
-Stated as engineering seams and deliberately deferred abstractions, not defects. Roadmap #19.2 resolved the two boundaries that used to be listed here (no explicit `projectId`; project identity hardcoded in the generic prompt) - what remains is the framework axis, plus project-level isolation beyond identity:
+Stated as engineering seams and deliberately deferred abstractions, not defects. Roadmap #19.2 resolved the two boundaries that used to be listed here (no explicit `projectId`; project identity hardcoded in the generic prompt), and Roadmap #19.3 resolved two more (no project scope on `PROJECT_VERIFIED` knowledge; no project namespace on History) - what remains is entirely the framework axis:
 
-1. **Hardcoded framework wording.** `qa-agent-prompt.js`'s system-prompt persona sentence still names Cypress directly, unconditionally - the current concentrated framework-axis coupling point, now that the project axis is parameterized via `ProjectProfile`.
+1. **Hardcoded framework wording.** `qa-agent-prompt.js`'s system-prompt persona sentence still names Cypress directly, unconditionally - the current concentrated framework-axis coupling point, now that the project axis is fully parameterized and isolated via `ProjectProfile`.
 2. **Direct Cypress/mochawesome parsing.** `collect-context.js` both parses the Cypress-native report format and injects project-specific constraint text in one file - there is no separate `CypressAdapter`/`FrameworkAdapter` module yet.
-3. **`PROJECT_VERIFIED` has no project scope.** The knowledge schema currently scopes units by browser and framework, but not by project - a future second project could, in principle, have this project's verified fact selected for its own failures.
-4. **Implicit Cypress framework default.** The knowledge selector falls back to `framework = "cypress"` whenever framework identity isn't explicitly supplied - which is every call today, since nothing yet produces that field.
-5. **History has no explicit namespace.** Flaky-test history lookups are scoped by this repository's own hardcoded workflow filename and job-name string, not an explicit `(project, framework)` key.
+3. **Implicit Cypress framework default.** The knowledge selector falls back to `framework = "cypress"` whenever framework identity isn't explicitly supplied - which is every call today, since nothing yet produces that field.
+4. **History's workflow source is still hardcoded.** `collect-history.js` queries a hardcoded workflow filename - the resulting aggregate's project *identity* is now explicit and checked (Roadmap #19.3), but *which* workflow gets queried in the first place is still a bare constant, not yet sourced from project-specific configuration.
 
 None of these affect current production behavior. They are the specific, source-verified reasons the rest of Roadmap #19 is scoped the way it is below.
 
@@ -274,7 +277,7 @@ QA automation architecture and Cypress E2E engineering; GitHub Actions CI orches
 
 ## Roadmap #19 — Project / Framework Portability
 
-**Status: #19.1 (read-only architecture audit) COMPLETE. #19.2 (explicit project identity foundation) COMPLETE. #19.3 (project-scoped knowledge/history) NEXT.**
+**Status: #19.1 (read-only architecture audit) COMPLETE. #19.2 (explicit project identity foundation) COMPLETE. #19.3 (project-scoped knowledge/history) COMPLETE.**
 
 The audit (summarized under [Current Portability Status](#current-portability-status) and [Known Architectural Boundaries](#known-architectural-boundaries) above) identified two genuinely separate axes, deliberately not collapsed into one generic "plugin" concept:
 
@@ -284,17 +287,17 @@ The audit (summarized under [Current Portability Status](#current-portability-st
 
 - #19.1 - architecture/coupling audit (read-only; identified the gaps below)
 - #19.2 - explicit project identity foundation: a minimal, immutable `ProjectProfile` now owns stable project identity (`projectId`) and stable project-specific constraints; the system prompt's persona identity is parameterized through it instead of hardcoded; `context.metadata.projectId` and the report's `sourceContext.projectId` are both populated; the production prompt output is unchanged, byte-for-byte
+- #19.3 - project-scoped knowledge/history: `PROJECT_VERIFIED` knowledge now requires an explicit `appliesTo.projects` scope, and flaky-test History now carries a `ProjectProfile`-sourced `projectId`; both are checked against the current analysis's project identity before being allowed to influence it - a different, missing, or malformed project identity on either side excludes project-specific Knowledge/History rather than treating it as universally applicable. Generic (project-independent) Knowledge, deterministic policy, and the current single-project production prompt/report output are all unchanged.
 
 **Next:**
 
-- #19.3 - project-scoped knowledge/history: give `PROJECT_VERIFIED` knowledge an explicit project scope, and give flaky-test history an explicit project namespace
 - #19.4 - a fully offline proof using a second, synthetic project - no live site, no real provider calls
 
 ### Phase B — Framework portability
 
 **Future** (not started): explicit framework identity; a formally documented `NormalizedFailure` contract (largely already implicit in `context.json`'s shape today); isolating Cypress/mochawesome-specific parsing behind a `FrameworkAdapter`; a fully offline proof using a synthetic second framework adapter; and only then evaluating a real Playwright adapter as a second, heavier proof.
 
-**Explicitly not implemented yet, and not implied anywhere above:** `FrameworkAdapter`, a formal `NormalizedFailure` schema, real Playwright support, multi-project `PROJECT_VERIFIED` isolation, and a project/framework-aware history namespace. (`ProjectProfile` itself is no longer on this list - it shipped in Roadmap #19.2. What's still future is the rest of the target pipeline below: `FrameworkAdapter` and the `NormalizedFailure` boundary it and `ProjectProfile` would jointly feed.) The diagram below is a **target**, not the current system - compare it against [High-level architecture (current)](#high-level-architecture-current) above.
+**Explicitly not implemented yet, and not implied anywhere above:** `FrameworkAdapter`, a formal `NormalizedFailure` schema, real Playwright support, and a second production project. (`ProjectProfile` and project-scoped Knowledge/History isolation are no longer on this list - they shipped in Roadmap #19.2/#19.3. What's still future is the rest of the target pipeline below: `FrameworkAdapter` and the `NormalizedFailure` boundary it and `ProjectProfile` would jointly feed, plus #19.4's synthetic second-project proof.) The diagram below is a **target**, not the current system - compare it against [High-level architecture (current)](#high-level-architecture-current) above.
 
 ### Target architecture (future - not yet implemented)
 
@@ -631,6 +634,16 @@ Wired Roadmap #15's subsystem into the real production prompt under an explicit 
 
 **Status: complete.** Introduced a minimal, immutable `ProjectProfile` (`scripts/ai/project-profile.js`) - `{ id, displayName, knownProjectConstraints }` - as the single production owner of stable project identity and stable project-specific context, resolving the two project-axis gaps #19.1 identified: `collect-context.js` no longer defines its own copy of the project constraints (it consumes the profile instead), and `qa-agent-prompt.js`'s system-prompt persona sentence no longer hardcodes the SUT's identity - it renders whichever profile it is given, defaulting to the current one for backward compatibility. `context.metadata.projectId` is now emitted unconditionally by collection, and the report's `sourceContext.projectId` carries it through (`null` for a context/fixture that predates the field, never a thrown error). The production system prompt's output is unchanged, byte-for-byte. A synthetic-profile unit test proves a second project could supply its own identity purely as data, with zero change to classification, policy, provider, knowledge, or correlation code. Framework identity (the prompt still names Cypress) is deliberately untouched - that is Phase B, not this stage.
 
+### Roadmap #19.3 — Project-Scoped Knowledge and History
+
+**Status: complete.** Extends Roadmap #19.2's `ProjectProfile` identity into an enforced isolation boundary for the two subsystems that could otherwise let one project's context leak into another's analysis.
+
+**Knowledge (#19.3B):** the schema's `appliesTo` object gained a third dimension, `projects` (`string[] | null`), parallel to the existing `browsers`/`frameworks` fields. `projects: null` means project-independent (unchanged behavior for the 5 non-project-specific units in the corpus); a non-null array means the unit is eligible only when the current analysis's project matches. The one `PROJECT_VERIFIED` unit now requires a non-null `appliesTo.projects` - an unscoped or malformed `PROJECT_VERIFIED` unit fails schema validation loudly at load time, the same way any other authoring mistake in a curated unit already did. The selector reads the current project only from `context.metadata.projectId`, never a hardcoded literal, and treats a missing or malformed current identity as "no known project" - project-specific Knowledge is excluded rather than guessed into eligibility.
+
+**History (#19.3C):** the collected History aggregate now carries a `projectId` field sourced from `ProjectProfile.id`, alongside its existing pass/fail counts. Before History can influence an analysis, its `projectId` is compared against the current analysis's project identity using three explicit states - a non-empty (trimmed) string is **valid**, a property that was never set at all is **absent**, and a present-but-null/empty/whitespace-only/non-string value is **invalid** (never treated as equivalent to absent). Matching valid identities allow History through unchanged; a mismatch, an invalid value on either side, or a valid identity paired with an absent one all exclude it. The one narrow exception is both sides genuinely absent (`ABSENT + ABSENT`) - preserved for legacy, pre-#19.3 test fixtures, and never reachable in real production traffic, since collection has unconditionally emitted both `context.metadata.projectId` (since #19.2) and `history.projectId` (since #19.3C) from the start. `projectId` itself is never serialized into the prompt payload or `report.history` - it is an internal trust gate only.
+
+Both changes are eligibility gates, not evidence: a project match never becomes an observed fact, never implies a root cause, and never influences `agent-policy.js`'s classification-to-`shouldCreateBug` decision, which remains a pure function of `{classification, shouldCreateBug}` with no awareness of project identity. Dataset/Baseline v1-v5 are unaffected - the offline evaluation harness scores pre-recorded results and never executes the Knowledge selector or History reader live, so no fixture required migration. For the current, single production project, every existing selection/History outcome is unchanged; the boundary was proven both individually and combined, using a synthetic second project id in tests only (no second production `ProjectProfile` exists).
+
 ### Roadmap summary
 
 | Roadmap item | Status |
@@ -642,10 +655,10 @@ Wired Roadmap #15's subsystem into the real production prompt under an explicit 
 | #18 - Provider / model abstraction (Gemini) | COMPLETE WITH DOCUMENTED LIMITATIONS |
 | #19.1 - Project/framework portability audit | COMPLETE |
 | #19.2 - Explicit project identity foundation | COMPLETE |
-| #19.3 - Project-scoped knowledge/history | NEXT |
+| #19.3 - Project-scoped knowledge/history | COMPLETE |
 | #19.4+ - Synthetic second-project proof, framework portability | NOT STARTED |
 | #20 - Data security & governance | PLANNED |
 
-**Next:** Roadmap #19.3 - project-scoped `PROJECT_VERIFIED` knowledge and a project-aware history namespace (see [Phase A](#roadmap-19--project--framework-portability) above); no behavior change to current production output expected.
+**Next:** Roadmap #19.4 - a fully offline, synthetic second-project proof (no live site, no real provider calls); see [Phase A](#roadmap-19--project--framework-portability) above.
 
 **Planned / future work** (not implemented yet): Controlled Correlation Re-validation (Roadmap #8, Phases 2-3, still outstanding); cross-run failure fingerprinting (correlation is currently scoped to a single workflow run only); API/database/performance testing integration; confidence-based policy refinements; structured provider output-schema improvements; human-approved action flow / automatic GitHub Issue creation from `shouldCreateBug`; automatic multi-provider fallback (explicitly not implemented - today's provider selection is single, static, and manual); human feedback loop into evaluation; Roadmap #20's full security/governance scope.
