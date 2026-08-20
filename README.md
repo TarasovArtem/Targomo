@@ -69,7 +69,7 @@ Cypress (Chrome)   Cypress (Edge)   Cypress (Firefox)
           triage report → PR comment
 ```
 
-Every box above exists in the current codebase today. `ProjectProfile` and `FrameworkAdapter` (discussed under [Roadmap #19](#roadmap-19--project--framework-portability) below) are **future** concepts and are deliberately not shown here.
+Every box above exists in the current codebase today. A minimal `ProjectProfile` (Roadmap #19.2) now supplies the project-specific inputs the collectors and the prompt step consume - a small, deterministic data source, not a new pipeline stage, so it isn't drawn as its own box. `FrameworkAdapter` (discussed under [Roadmap #19](#roadmap-19--project--framework-portability) below) remains a **future** concept.
 
 ## How failure triage works
 
@@ -210,48 +210,53 @@ Required branch-protection checks are `Unit tests`, `Cypress - chrome`, and `Cyp
 
 ## Current Portability Status
 
-This section is the direct output of the Roadmap #19.1 architecture audit (read-only, source-verified, no code changed) - it states current reality plainly, neither overclaiming nor understating it.
+This section reflects the Roadmap #19.1 architecture audit plus Roadmap #19.2's completed work - it states current reality plainly, neither overclaiming nor understating it.
 
-**Today, this repository is wired to exactly one project and one framework:**
+**Today, this repository is wired to exactly one project and one E2E framework:**
 
-- Project / SUT: **Targomo POI** ([poi.targomo.com](https://poi.targomo.com))
+- Project / SUT: a single, publicly accessible third-party POI (points-of-interest) map web application. It is not part of this repository and not owned by this project - it exists only as a realistic external target for the Cypress suite and a source of real cross-browser failure evidence for the QA AI Agent to triage. Its stable identity is a `projectId` owned by the current `ProjectProfile` (see below).
 - E2E framework: **Cypress**
 - Browsers: **Chrome, Edge, Firefox**
 - AI providers: **Mock, Groq, Gemini**
 
 The system works correctly for this scope today - the limitations below matter for *introducing a second project or framework*, not for current production behavior.
 
-**Already project/framework-neutral, and expected to stay unchanged as Roadmap #19 proceeds:**
+**Already project/framework-neutral, and expected to stay unchanged as the rest of Roadmap #19 proceeds:**
 
 - Provider abstraction (`providers/**`) and the `analyze()` contract
 - The deterministic policy layer (`agent-policy.js`)
 - The browser-correlation *algorithm* (it reasons over already-normalized evidence - `title`/`specFile`/`error.message` - not over any framework-native shape)
 - Evaluation/regression scoring semantics
 - Most of the system prompt's reasoning rules (grounding, history authority, correlation authority, knowledge authority)
+- Project identity *ownership* (Roadmap #19.2): a minimal, immutable `ProjectProfile` is now the single source of stable project identity and project-specific context - a future second project is supplied as data, not by editing consumers
+
+**Resolved by Roadmap #19.2 (previously listed here as open):**
+
+- Explicit, stable project identity now exists (`projectId`), emitted unconditionally by collection and carried through to the report
+- The system prompt's persona sentence no longer hardcodes the SUT's identity - it renders whichever `ProjectProfile` it is given
+- Stable project-specific constraints are no longer owned by the collector - they come from `ProjectProfile`
 
 **Still project- or framework-bound today:**
 
-- No explicit, stable project identity exists anywhere in the codebase
-- The system prompt's persona sentence still names "Cypress" and `poi.targomo.com` directly, unconditionally
-- Failure collection (`collect-context.js`) parses Cypress/mochawesome report output directly - there is no separate framework-adapter boundary yet
-- The one `PROJECT_VERIFIED` knowledge unit has no explicit, machine-readable project scope
-- Knowledge selection silently defaults to a Cypress framework assumption when no framework is specified (which is always, today)
+- The one `PROJECT_VERIFIED` knowledge unit has no explicit, machine-readable project scope - a future second project could, in principle, have this project's verified fact selected for its own failures
 - Flaky-test history is scoped by this repository's own workflow-file/job-name convention, not an explicit project/framework namespace
+- Explicit framework identity is not yet produced; the system prompt's persona sentence still names "Cypress" directly, unconditionally
+- Failure collection (`collect-context.js`) parses Cypress/mochawesome report output directly - there is no separate framework-adapter boundary yet
+- Knowledge selection silently defaults to a Cypress framework assumption when no framework is specified (which is always, today)
 
-This is why Roadmap #19 exists - see below.
+Project portability is **improved, not complete**: explicit identity and ownership now exist, but project-level isolation isn't finished until project-scoped knowledge/history and a second-project proof land (Roadmap #19.3/#19.4). Framework portability has not started. This is why the rest of Roadmap #19 exists - see below.
 
 ## Known Architectural Boundaries
 
-Stated as engineering seams and deliberately deferred abstractions, not defects:
+Stated as engineering seams and deliberately deferred abstractions, not defects. Roadmap #19.2 resolved the two boundaries that used to be listed here (no explicit `projectId`; project identity hardcoded in the generic prompt) - what remains is the framework axis, plus project-level isolation beyond identity:
 
-1. **No explicit `projectId`.** Nothing in the codebase names "which project" a failure belongs to in a stable, machine-readable way.
-2. **Hardcoded persona wording.** `qa-agent-prompt.js`'s system-prompt persona sentence names Cypress and `poi.targomo.com` directly - the single most concentrated current coupling point, on both the project and framework axis at once.
-3. **Direct Cypress/mochawesome parsing.** `collect-context.js` both parses the Cypress-native report format and injects project-specific constraint text in one file - there is no separate `CypressAdapter`/`FrameworkAdapter` module yet.
-4. **`PROJECT_VERIFIED` has no project scope.** The knowledge schema currently scopes units by browser and framework, but not by project - a future second project could, in principle, have a Targomo-verified fact selected for its own failures.
-5. **Implicit Cypress framework default.** The knowledge selector falls back to `framework = "cypress"` whenever framework identity isn't explicitly supplied - which is every call today, since nothing yet produces that field.
-6. **History has no explicit namespace.** Flaky-test history lookups are scoped by this repository's own hardcoded workflow filename and job-name string, not an explicit `(project, framework)` key.
+1. **Hardcoded framework wording.** `qa-agent-prompt.js`'s system-prompt persona sentence still names Cypress directly, unconditionally - the current concentrated framework-axis coupling point, now that the project axis is parameterized via `ProjectProfile`.
+2. **Direct Cypress/mochawesome parsing.** `collect-context.js` both parses the Cypress-native report format and injects project-specific constraint text in one file - there is no separate `CypressAdapter`/`FrameworkAdapter` module yet.
+3. **`PROJECT_VERIFIED` has no project scope.** The knowledge schema currently scopes units by browser and framework, but not by project - a future second project could, in principle, have this project's verified fact selected for its own failures.
+4. **Implicit Cypress framework default.** The knowledge selector falls back to `framework = "cypress"` whenever framework identity isn't explicitly supplied - which is every call today, since nothing yet produces that field.
+5. **History has no explicit namespace.** Flaky-test history lookups are scoped by this repository's own hardcoded workflow filename and job-name string, not an explicit `(project, framework)` key.
 
-None of these affect current Targomo + Cypress behavior. They are the specific, source-verified reasons Roadmap #19 is scoped the way it is below.
+None of these affect current production behavior. They are the specific, source-verified reasons the rest of Roadmap #19 is scoped the way it is below.
 
 ## Key Architecture Decisions
 
@@ -269,19 +274,27 @@ QA automation architecture and Cypress E2E engineering; GitHub Actions CI orches
 
 ## Roadmap #19 — Project / Framework Portability
 
-**Status: #19.1 (read-only architecture audit) COMPLETE. #19.2 (first implementation stage) NOT STARTED.**
+**Status: #19.1 (read-only architecture audit) COMPLETE. #19.2 (explicit project identity foundation) COMPLETE. #19.3 (project-scoped knowledge/history) NEXT.**
 
 The audit (summarized under [Current Portability Status](#current-portability-status) and [Known Architectural Boundaries](#known-architectural-boundaries) above) identified two genuinely separate axes, deliberately not collapsed into one generic "plugin" concept:
 
 ### Phase A — Project portability
 
-Goals: an explicit, stable project identity; a small `ProjectProfile` data contract; isolating project-specific context (currently the hardcoded persona sentence and constraint list) behind it; giving `PROJECT_VERIFIED` knowledge an explicit project scope; a project-aware history namespace; and a fully offline proof using a second, synthetic project - no live site, no real provider calls.
+**Completed:**
+
+- #19.1 - architecture/coupling audit (read-only; identified the gaps below)
+- #19.2 - explicit project identity foundation: a minimal, immutable `ProjectProfile` now owns stable project identity (`projectId`) and stable project-specific constraints; the system prompt's persona identity is parameterized through it instead of hardcoded; `context.metadata.projectId` and the report's `sourceContext.projectId` are both populated; the production prompt output is unchanged, byte-for-byte
+
+**Next:**
+
+- #19.3 - project-scoped knowledge/history: give `PROJECT_VERIFIED` knowledge an explicit project scope, and give flaky-test history an explicit project namespace
+- #19.4 - a fully offline proof using a second, synthetic project - no live site, no real provider calls
 
 ### Phase B — Framework portability
 
-Goals: explicit framework identity; a formally documented `NormalizedFailure` contract (largely already implicit in `context.json`'s shape today); isolating Cypress/mochawesome-specific parsing behind a `FrameworkAdapter`; a fully offline proof using a synthetic second framework adapter; and only then evaluating a real Playwright adapter as a second, heavier proof.
+**Future** (not started): explicit framework identity; a formally documented `NormalizedFailure` contract (largely already implicit in `context.json`'s shape today); isolating Cypress/mochawesome-specific parsing behind a `FrameworkAdapter`; a fully offline proof using a synthetic second framework adapter; and only then evaluating a real Playwright adapter as a second, heavier proof.
 
-**Explicitly not implemented yet, and not implied anywhere above:** `ProjectProfile`, `FrameworkAdapter`, a formal `NormalizedFailure` schema, real Playwright support, multi-project `PROJECT_VERIFIED` isolation, and a project/framework-aware history namespace. The diagram below is a **target**, not the current system - compare it against [High-level architecture (current)](#high-level-architecture-current) above.
+**Explicitly not implemented yet, and not implied anywhere above:** `FrameworkAdapter`, a formal `NormalizedFailure` schema, real Playwright support, multi-project `PROJECT_VERIFIED` isolation, and a project/framework-aware history namespace. (`ProjectProfile` itself is no longer on this list - it shipped in Roadmap #19.2. What's still future is the rest of the target pipeline below: `FrameworkAdapter` and the `NormalizedFailure` boundary it and `ProjectProfile` would jointly feed.) The diagram below is a **target**, not the current system - compare it against [High-level architecture (current)](#high-level-architecture-current) above.
 
 ### Target architecture (future - not yet implemented)
 
@@ -314,7 +327,7 @@ The provider factory and the validation/policy layer are drawn unchanged deliber
 
 ## Roadmap #20 — Data Security & Governance (planned)
 
-**Status: NOT STARTED.** No controls described below exist in the codebase today. Planned topics, informed by choices Roadmap #18/#19 are already making (e.g. a future `ProjectProfile` becoming a natural place to scope per-project data policy): PII/secret redaction before data reaches a prompt, an AI-visible-evidence allowlist, provider governance (which vendors are permitted for which data), data retention policy, regional processing constraints, data classification, and security profiles. None of this is implied to exist by anything above.
+**Status: NOT STARTED.** No controls described below exist in the codebase today. Planned topics, informed by choices Roadmap #18/#19 are already making (e.g. the current `ProjectProfile` becoming a natural place to scope per-project data policy once this work starts): PII/secret redaction before data reaches a prompt, an AI-visible-evidence allowlist, provider governance (which vendors are permitted for which data), data retention policy, regional processing constraints, data classification, and security profiles. None of this is implied to exist by anything above.
 
 ## Project structure
 
@@ -335,6 +348,7 @@ The provider factory and the validation/policy layer are drawn unchanged deliber
     ./scripts/ai/config.js
     ./scripts/ai/format-pr-comment.js
     ./scripts/ai/pr-comment-client.js
+    ./scripts/ai/project-profile.js
     ./scripts/ai/qa-agent-prompt.js
 
     ./scripts/ai/providers/index.js
@@ -426,11 +440,9 @@ The sections below are the project's chronological engineering log: every roadma
 
 ### Current System Under Test
 
-The repository currently uses the [Targomo](https://poi.targomo.com) POI (points of interest) map application as its real E2E target/demo application - the Cypress suite in `cypress/` exercises Targomo's category tree UI and POI tile requests, and the QA Agent's failure triage is exercised against that suite's real failures.
+The repository currently uses a publicly accessible third-party POI (points-of-interest) map web application as its real E2E target/demo application - the Cypress suite in `cypress/` exercises that application's category-tree UI and POI-tile data requests, and the QA Agent's failure triage is exercised against that suite's real failures.
 
-**Targomo is the current System Under Test. QA AI Agent is the project being developed in this repository.** See [Current Portability Status](#current-portability-status) above for exactly what is and is not yet portable beyond this project.
-
-A Playwright + TypeScript port of the same Cypress scenarios and Page Object Model, targeting the same Targomo application, lives at [TarasovArtem/TargomoPlaywright](https://github.com/TarasovArtem/TargomoPlaywright) (a separate repository, not part of this project, and not evidence that this repository itself supports Playwright - see [Roadmap #19](#roadmap-19--project--framework-portability) above).
+**The external application is the current System Under Test. QA AI Agent is the project being developed in this repository.** The SUT is not part of this repository and not affiliated with it - it is used only as a realistic public target for exercising the CI and failure-triage architecture; its stable identity within this codebase is a `projectId` owned by the current `ProjectProfile` (Roadmap #19.2). See [Current Portability Status](#current-portability-status) above for exactly what is and is not yet portable beyond this project.
 
 ### Architectural Invariants
 
@@ -497,6 +509,8 @@ PR comment (pull_request runs only)
 This is a deliberate choice, not a bug: the project previously called [GitHub Models](https://docs.github.com/en/github-models), which was [fully retired by GitHub on 2026-07-30](https://github.blog/changelog/2026-07-30-github-models-is-now-retired/) (confirmed live - its inference API returned `410 Gone` for every request). The AI layer was refactored to this provider-neutral shape first, and Groq was added as the first real provider once that abstraction existed; Gemini was added second (Roadmap #18) to prove the abstraction generalizes to a second, structurally different vendor.
 
 The boundary is runtime-checked, not just documented: `providers/provider-contract.js` rejects a provider missing `analyze()` (or a non-empty-string response) with a clear error before it can reach `JSON.parse` or a retry loop. Provider failures are normalized to one shared `ProviderError` shape (`message`, `code` from a small provider-neutral set, `retryable`, `cause`) in `providers/provider-error.js`. Each provider also exposes a plain `provider.name` string (`"mock"`, `"groq"`, or `"gemini"`, depending on which is configured), which the application attaches to the report as `analysis.provider` *after* the model response is validated.
+
+Since Roadmap #19.2, the "known project constraints" and project identity shown above are sourced from the current `ProjectProfile` (`scripts/ai/project-profile.js`), not hardcoded in the collector or the prompt - see [Roadmap #19.2](#roadmap-192--explicit-project-identity-foundation) below for what changed and [Current Portability Status](#current-portability-status) for what that does and doesn't make portable yet.
 
 ### Controlled experiments
 
@@ -611,7 +625,11 @@ Wired Roadmap #15's subsystem into the real production prompt under an explicit 
 
 ### Roadmap #19.1 — Project / Framework Portability Audit
 
-**Status: complete (read-only).** A source-verified architecture audit classifying every meaningful component's coupling to the current project (Targomo) and framework (Cypress), producing the [Current Portability Status](#current-portability-status) and [Known Architectural Boundaries](#known-architectural-boundaries) sections above, plus the target architecture and Phase A/Phase B plan under [Roadmap #19](#roadmap-19--project--framework-portability). No production code, tests, workflow, or dataset/baseline files were changed by this audit.
+**Status: complete (read-only).** A source-verified architecture audit classifying every meaningful component's coupling to the current project (the external SUT) and framework (Cypress), producing the [Current Portability Status](#current-portability-status) and [Known Architectural Boundaries](#known-architectural-boundaries) sections above, plus the target architecture and Phase A/Phase B plan under [Roadmap #19](#roadmap-19--project--framework-portability). No production code, tests, workflow, or dataset/baseline files were changed by this audit.
+
+### Roadmap #19.2 — Explicit Project Identity Foundation
+
+**Status: complete.** Introduced a minimal, immutable `ProjectProfile` (`scripts/ai/project-profile.js`) - `{ id, displayName, knownProjectConstraints }` - as the single production owner of stable project identity and stable project-specific context, resolving the two project-axis gaps #19.1 identified: `collect-context.js` no longer defines its own copy of the project constraints (it consumes the profile instead), and `qa-agent-prompt.js`'s system-prompt persona sentence no longer hardcodes the SUT's identity - it renders whichever profile it is given, defaulting to the current one for backward compatibility. `context.metadata.projectId` is now emitted unconditionally by collection, and the report's `sourceContext.projectId` carries it through (`null` for a context/fixture that predates the field, never a thrown error). The production system prompt's output is unchanged, byte-for-byte. A synthetic-profile unit test proves a second project could supply its own identity purely as data, with zero change to classification, policy, provider, knowledge, or correlation code. Framework identity (the prompt still names Cypress) is deliberately untouched - that is Phase B, not this stage.
 
 ### Roadmap summary
 
@@ -623,9 +641,11 @@ Wired Roadmap #15's subsystem into the real production prompt under an explicit 
 | #17 - Curated external knowledge | COMPLETE |
 | #18 - Provider / model abstraction (Gemini) | COMPLETE WITH DOCUMENTED LIMITATIONS |
 | #19.1 - Project/framework portability audit | COMPLETE |
-| #19.2+ - Project/framework portability implementation | NOT STARTED |
+| #19.2 - Explicit project identity foundation | COMPLETE |
+| #19.3 - Project-scoped knowledge/history | NEXT |
+| #19.4+ - Synthetic second-project proof, framework portability | NOT STARTED |
 | #20 - Data security & governance | PLANNED |
 
-**Next:** Roadmap #19.2 - the first small implementation stage of [Phase A (project portability)](#roadmap-19--project--framework-portability) above (explicit project identity, no behavior change to current Targomo+Cypress output expected).
+**Next:** Roadmap #19.3 - project-scoped `PROJECT_VERIFIED` knowledge and a project-aware history namespace (see [Phase A](#roadmap-19--project--framework-portability) above); no behavior change to current production output expected.
 
 **Planned / future work** (not implemented yet): Controlled Correlation Re-validation (Roadmap #8, Phases 2-3, still outstanding); cross-run failure fingerprinting (correlation is currently scoped to a single workflow run only); API/database/performance testing integration; confidence-based policy refinements; structured provider output-schema improvements; human-approved action flow / automatic GitHub Issue creation from `shouldCreateBug`; automatic multi-provider fallback (explicitly not implemented - today's provider selection is single, static, and manual); human feedback loop into evaluation; Roadmap #20's full security/governance scope.
