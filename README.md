@@ -2,82 +2,330 @@
 
 ![Cypress E2E Tests](https://github.com/TarasovArtem/qa-ai-agent/actions/workflows/cypress.yml/badge.svg?branch=main)
 
-#### Description
-
-QA AI Agent is an AI-assisted automated-test failure triage system that collects failure evidence, correlates multi-browser results, performs one centralized AI analysis through a provider-neutral abstraction (Groq and Gemini both supported today), applies a deterministic application-level safety policy, and evaluates its historical decisions against a versioned regression dataset.
+QA AI Agent is an AI-assisted failure-triage system built on top of a cross-browser Cypress E2E suite. It deterministically aggregates cross-browser test evidence, performs one centralized AI analysis through a provider-neutral abstraction (Mock / Groq / Gemini), validates the model's output by hand, applies a deterministic application-level safety policy on top of the model's recommendation, and protects its own behavior over time with an offline evaluation/regression suite. The AI is **assistive, not authoritative**: it never decides whether a CI run passes, and it never files a bug on its own recommendation alone.
 
 See [TEST_CASES.md](TEST_CASES.md) for the full list of manual test cases covered by the Cypress suite, with preconditions, steps, and expected results for each.
 
-### Current System Under Test
+## Key capabilities
 
-The repository currently uses the [Targomo](https://poi.targomo.com) POI (points of interest) map application as its real E2E target/demo application - the Cypress suite in `cypress/` exercises Targomo's category tree UI and POI tile requests, and the QA Agent's failure triage is exercised against that suite's real failures.
+- Cross-browser E2E execution: Chrome / Edge / Firefox, each in its own CI job
+- One logical AI analysis per failing workflow, never one call per browser
+- Deterministic, code-computed cross-browser failure correlation (no LLM involved)
+- Evidence-grounded model reasoning (observed fact vs. supported inference vs. unknown - enforced by prompt contract)
+- Deterministic `shouldCreateBug` safety policy the model cannot override
+- Provider abstraction across three real backends: Mock / Groq / Gemini, swappable with zero core changes
+- Machine-readable provider provenance (attempt count, first-attempt error) and bounded transport retry
+- Curated, schema-validated, offline Knowledge Layer selected before the model is ever called
+- Versioned, frozen offline evaluation/regression datasets (v1-v5) that protect 15 behavioral dimensions per sample
+- GitHub Actions CI with authoritative Cypress pass/fail, independent of AI outcome
 
-**Targomo is the current System Under Test. QA AI Agent is the project being developed in this repository.** This distinction matters because the long-term architecture is intended to become portable to additional projects/test suites beyond Targomo - see [Roadmap](#roadmap) - though that portability is not yet implemented; today, the QA Agent is wired specifically to this Cypress suite's report/context format.
+## Why this project exists
 
-A Playwright + TypeScript port of the same Cypress scenarios and Page Object Model, targeting the same Targomo application, lives at [TarasovArtem/TargomoPlaywright](https://github.com/TarasovArtem/TargomoPlaywright) (a separate repository, not part of this project).
+Cross-browser E2E failures are frequently ambiguous. A single failing test can mean:
 
-### Architectural Invariants
+- a real product defect,
+- a broken or stale test (selector, assertion, page object),
+- CI/environment instability unrelated to the app or the test,
+- genuine browser-specific behavior,
+- a flaky timing/synchronization issue,
+- or simply not enough evidence to tell.
 
-These properties are enforced by design and construction, not merely by convention - most have dedicated regression tests:
+A raw error message or stack trace alone is usually not enough to distinguish these. This project combines several deterministic evidence sources - the current failure's own error/source context, cross-browser correlation, recent pass/fail history, and curated engineering knowledge - and hands all of it to a model in a single, tightly-scoped analysis, under an explicit contract that forbids the model from inventing facts the evidence doesn't support.
 
-- **Cypress remains authoritative.** AI analysis is a diagnostic layer on top of the real test result; nothing downstream can turn a failed Cypress run green, and nothing upstream requires AI to run at all.
-- **One failing workflow → one logical AI analysis**, never one per browser - browser evidence is aggregated first, and a provider's own bounded transport retries stay inside that same one logical analysis.
-- **Provider adapters are transport-only.** Authentication, endpoint, and response-envelope extraction live in `scripts/ai/providers/`; prompt construction, semantic parsing, and policy live in core and never change per provider.
-- **Deterministic policy owns the final bug-creation decision** - only a `PRODUCT_BUG` classification may keep a model-recommended `shouldCreateBug: true`; every other classification is forced to `false`, regardless of what the model said.
-- **Knowledge is guidance, never evidence** - curated knowledge units can broaden a hypothesis but can never manufacture a fact about the current run, override direct evidence, browser correlation, history, or policy.
-- **Provider errors are normalized** to one shared, provider-neutral vocabulary (`AUTH`/`RATE_LIMIT`/`TIMEOUT`/`NETWORK`/`INVALID_RESPONSE`/`CONFIGURATION`/`UNKNOWN`) before the application reasons about a failure - never an HTTP status code or a provider name.
-- **No automatic provider fallback** - a misconfigured or failing provider fails the analysis honestly rather than silently substituting another provider or a fabricated result.
-- **Evaluation history is immutable once frozen** - every Dataset/Baseline version, once merged, is never rewritten; new evidence becomes a new, additive sample or a new version, never a retroactive edit.
+Two things are true at once by design: **the AI is doing real reasoning work**, and **Cypress remains the sole source of truth for whether the build passed**. Nothing downstream of Cypress - correlation, knowledge selection, the AI call, or application policy - can turn a failed run green, and none of it is required for Cypress's own result to be authoritative.
 
-### Commands for running tests and files structure
+## High-level architecture (current)
 
-#### Installation
+```
+Cypress (Chrome)   Cypress (Edge)   Cypress (Firefox)
+      │                  │                  │
+      └────────┬─────────┴─────────┬────────┘
+               ▼                   ▼
+         deterministic failure collectors (per browser)
+               │
+               ▼
+        browser aggregation  (pick ONE primary failure,
+                               compute browserCorrelation)
+               │
+               ▼
+        history + knowledge selection  (both offline, deterministic)
+               │
+               ▼
+          QA prompt / context
+               │
+               ▼
+          Provider Factory
+        ┌──────┼───────┐
+        ▼      ▼        ▼
+      Mock   Groq    Gemini
+        └──────┼───────┘
+               ▼
+       raw model text (never trusted as-is)
+               │
+               ▼
+       validation + deterministic policy
+               │
+               ▼
+          triage report → PR comment
+```
 
-    git clone https://github.com/TarasovArtem/qa-ai-agent.git
+Every box above exists in the current codebase today. `ProjectProfile` and `FrameworkAdapter` (discussed under [Roadmap #19](#roadmap-19--project--framework-portability) below) are **future** concepts and are deliberately not shown here.
 
-    cd qa-ai-agent
+## How failure triage works
 
-    npm install
+**Browsers never call the AI themselves.** Chrome, Edge, and Firefox each run the identical, unmodified Cypress suite in their own CI job and only ever record their own pass/fail outcome plus (on failure) a structured failure context - no job calls an AI provider. A separate, downstream job runs after all three browsers finish, aggregates every browser's result, and performs **at most one** real AI analysis for the whole workflow run - never one per browser. On a fully green run, this job still runs but performs zero AI calls.
 
+This "one logical analysis" design is a deliberate architecture decision, not an accident of implementation:
 
-#### Opening Cypress GUI
+- **Avoids duplicate/racing analyses.** Two or three browsers failing the same underlying defect would otherwise trigger two or three redundant (and possibly rate-limited) provider calls for one real problem.
+- **Gives the model real cross-browser evidence.** The single call still receives deterministic correlation data (which browsers failed, whether their failures share a signature) - richer evidence than any one browser's isolated failure.
+- **Keeps cost and latency bounded and predictable** - one call per failing run, regardless of how many browsers are in the matrix.
+- **Produces one consistent classification/report** per incident instead of two or three that could disagree.
 
-    npx cypress open 
+This is distinct from **provider transport retries**: within that one logical analysis, the provider call itself may be retried a bounded number of times (see [Provider provenance & retry](#provider-provenance--retry) below) if the *transport* fails - that is still one logical analysis, not a second one.
 
-or 
+## Deterministic safety model
 
-    npm run cypress:open
+**The model proposes. The application decides.** The model returns a recommendation - `classification`, `confidence`, `rootCause`, `evidence`, `recommendedFix`, `shouldRetry`, `shouldCreateBug` - but none of it is trusted as an authoritative action decision. A separate, pure, deterministic application layer (`scripts/ai/agent-policy.js`) makes the actual call:
 
+- Only a `PRODUCT_BUG` classification may keep a model-recommended `shouldCreateBug: true`.
+- Every other classification (`TEST_BUG`, `FLAKY_TEST`, `ENVIRONMENT`, `EXTERNAL_DEPENDENCY`, `UNKNOWN`) has its `shouldCreateBug` forced to `false`, regardless of what the model suggested.
 
-#### Run all tests in specific browser with terminal (***Browsers should be installed on your local machine***)
+This is a **ceiling** on which classifications *may* create a bug, not a floor that automatically files one for every `PRODUCT_BUG` - there is currently no automatic GitHub Issue creation; `shouldCreateBug` is a field for a human to act on.
 
-    npm run chrome
+The final report's field shape matters and is documented precisely here (not as a simplification): each result's `shouldCreateBug` is the **final, post-policy** value, and a nested `policy` object records the raw recommendation and whether policy intervened - `policy.originalShouldCreateBug` (the model's raw value) and `policy.adjusted` (`true` only when policy actually changed the outcome; `policy.adjusted: false` means policy ran and found no override necessary, never that policy was skipped). The separate offline Evaluation Dataset schema curates the same distinction under its own flat field names (`actual.originalShouldCreateBug`, `actual.policyAdjusted`) - a deliberately different, dataset-local convention, not the live report's shape.
 
-    npm run firefox
+`agent-policy.js` itself is a pure function of `{classification, shouldCreateBug}` only - it has no awareness of the project, the framework, the browser, the provider, or the model name, which is why it required zero changes across every roadmap item to date, including adding a second real AI provider.
 
-    npm run edge
+## Evidence grounding
 
-or, without picking a browser (uses Cypress's default):
+The system prompt enforces an explicit epistemic contract on every field the model writes, not just a top-level classification:
 
-    npm run test:e2e
+- **OBSERVED FACT** - something the supplied evidence (current-run error/assertion text, source code, deterministic browser-correlation fields, history, or other explicitly supplied context) directly establishes.
+- **SUPPORTED INFERENCE** - a reasonable conclusion that goes beyond what's directly observed but stays grounded in and consistent with the evidence available. Allowed, but must never be presented as an observed fact.
+- **UNKNOWN / NOT ESTABLISHED** - a specific mechanism the evidence doesn't pin down. The model is explicitly told to say so plainly rather than inventing a plausible-sounding cause merely because it would explain the symptoms.
 
+A confident, well-evidenced classification never needs an unproven mechanism to justify it - the model's certainty about *what* happened and its certainty about *why* it happened in mechanistic detail are treated as independent.
 
-#### Test files structure
+Three supporting data sources are each bounded by an explicit authority rule so none of them can manufacture a fact about the current run:
+
+- **History** (recent pass/fail counts for this browser) is a probabilistic signal, never proof - an intermittent pattern can support `FLAKY_TEST`, but history alone can never establish what happened in *this* run.
+- **Browser correlation** (below) is deterministic, code-computed evidence about what was actually observed across browsers - real evidence, but it never by itself proves *why* two browsers agree or differ.
+- **Knowledge Layer content** (below) is guidance only - it can broaden which hypotheses the model considers, but it can never stand in for evidence, override direct evidence, override correlation, override history, or override policy.
+
+This does not claim hallucinations are impossible; it claims the prompt contract and the surrounding evidence pipeline are deliberately engineered to make an ungrounded claim visible and structurally discouraged, and that the one dimension that matters most for safety - `shouldCreateBug` - is never decided by the model's own text at all (see [Deterministic safety model](#deterministic-safety-model) above).
+
+## Multi-browser correlation
+
+When more than one browser fails in the same workflow run, the aggregator still analyzes only one primary browser's failure - but it deterministically computes cross-browser correlation metadata from *every* browser's real, recorded outcome (never by an LLM) and attaches it to that one analysis:
+
+- `failedBrowsers` / `passedBrowsers` - which browsers actually failed/passed in this run
+- `primaryBrowser` - which one was selected for the single AI analysis
+- `failureScope` - `single-browser` or `multi-browser`
+- `sameFailureSignature` - `true`/`false` when at least two failed browsers have comparable evidence, `null` when that comparison couldn't be made (explicitly not the same as `false`)
+
+This distinction matters diagnostically: "Firefox failed alone while Chrome and Edge passed" and "all three browsers failed with an identical error signature" are materially different pieces of debugging evidence, and the prompt explicitly forbids collapsing either pattern into an automatic conclusion (multiple browsers failing the same way does not by itself prove `PRODUCT_BUG` - a shared test bug or shared environment issue produces the same pattern). Correlation is evidence to weigh, never a classification rule by itself.
+
+## Knowledge Layer
+
+A curated, deterministic, fully offline layer of small QA/engineering knowledge units, selected **before** the AI provider is ever called (zero embeddings, zero vector search, zero LLM-based selection - plain tag/browser/framework matching with a fixed unit-count and character budget).
+
+**Currently instantiated production corpus: 6 units, 2 of them `CURATED_EXTERNAL`** (sourced from official Cypress and GitHub Actions documentation), the rest project- or framework-scoped internal guidance.
+
+The schema supports a broader **source-type vocabulary** than the current corpus happens to use - this distinction matters and is kept explicit rather than blurred:
+
+| Source type | Meaning | Currently instantiated? |
+|---|---|---|
+| `PROJECT_VERIFIED` | Verified true for this specific project | Yes (1 unit) |
+| `CURATED_INTERNAL` | Human-authored general QA/framework guidance | Yes (3 units) |
+| `CURATED_EXTERNAL` | Summarized from authoritative external docs | Yes (2 units) |
+| `CONTROLLED_EXPERIMENT` | Derived from a specific controlled experiment | Supported by schema, no unit uses it today |
+
+Design invariants, enforced by construction, not just documentation:
+
+- **Guidance only, never current-run evidence** - a knowledge statement can broaden a hypothesis or describe known framework/project behavior, but can never by itself establish what happened in the current run, and can never override direct evidence, browser correlation, history, or the deterministic `shouldCreateBug` policy.
+- **Schema-validated and loud on error** - an invalid or duplicate unit fails loudly at load time; a curated file is always human-authored, so a mistake must be visible, never silently skipped.
+- **Bounded** - a hard cap on unit count and total characters, so knowledge content can never dominate the prompt.
+
+## Provider abstraction
+
+```js
+provider.analyze({ systemPrompt, userPrompt }) → Promise<string>
+```
+
+This one contract is the entire boundary between core reasoning and any specific AI vendor. **Provider adapters own** authentication, HTTP transport, the vendor's native request envelope, and the vendor's native response extraction. **Core owns everything else**: prompt construction, context assembly, knowledge selection, retry orchestration, JSON parsing, semantic validation, application policy, and reporting. A provider hands back a raw string and nothing more - it never returns a trusted, parsed QA result, and it never asserts its own identity inside the model's JSON output (the application attaches `provider.name` to the report only after independently validating the response).
+
+### Provider comparison
+
+| Provider | Role | Transport | Wired into normal CI |
+|---|---|---|---|
+| `MockProvider` | Deterministic offline provider for local development and all unit tests | No network call | Used in tests, not applicable to live CI |
+| `GroqProvider` | Current real failure-triage provider | OpenAI-compatible HTTP Chat Completions API | Yes - the only provider currently wired into GitHub Actions |
+| `GeminiProvider` | Second real provider / provider-abstraction portability proof | Google's native `generateContent` REST API | **No** - implemented and real-API-verified, but not CI-wired, no repository secret |
+
+### Why Gemini exists
+
+Gemini was not added merely to have a second model on hand. It exists to **prove the provider abstraction is real**, not just a single-vendor wrapper with an extensibility comment. Groq (OpenAI-compatible Chat Completions) and Gemini (Google's native `generateContent` envelope) have materially different authentication headers, request shapes, and response envelopes - yet integrating Gemini required zero changes to the prompt, semantic validation, policy, knowledge selection, or evaluation layers. That is the actual proof: the abstraction absorbed a structurally different vendor without the "core" of the system noticing.
+
+**What is and is not established about Gemini:** a single controlled, offline-triggered live API call successfully exercised the real Gemini endpoint end-to-end and produced a well-formed, correctly-policed result. **Real API compatibility was proven for that one controlled call.** That is explicitly distinct from **production validation**, which was **not** established: Gemini has never been exercised by CI, has no repository secret, and has no availability/cost/rate-limit/compliance history. Gemini is not the production default, not a fallback provider, and is not claimed to be better than Groq - see [Roadmap #20](#roadmap-20--data-security--governance-planned) for the governance work a real second-provider rollout would still need.
+
+### Provider provenance & retry
+
+Every analysis records machine-readable provenance on the report: `analysis.provider`, `analysis.providerAttempts` (the 1-based attempt count reached within this one logical analysis), and `analysis.firstAttemptError` (a safe, allowlisted summary of the first attempt's failure, if any - never a provider's raw exception text, which could otherwise leak request/response detail into a committed artifact).
+
+Three related concepts are kept strictly separate, on purpose:
+
+- **Provider transport retry** - a provider adapter makes exactly one outward HTTP request per `analyze()` call; core (`runProviderAnalysis()`) owns a small, bounded retry loop *around* that call, gated on whether the failure was marked retryable. This still counts as one logical analysis, not a new one.
+- **Malformed semantic response** - if the model's JSON output doesn't parse or doesn't match the expected shape, that is a validation failure, not a transport failure, and is **not** retried.
+- **QA `shouldRetry`** - a field in the model's own recommendation about whether the *Cypress test* should be re-run. It has nothing to do with HTTP retries and is unrelated to `providerAttempts`.
+
+## Evaluation & regression protection
+
+An architecture change to the prompt, provider layer, or policy is only as trustworthy as the evidence that it didn't silently make things worse. This project protects against that with a fully offline, deterministic evaluation/regression suite scored against frozen historical ground truth - it never calls a real provider and never re-runs a live experiment.
+
+| Dataset version | Samples | Status |
+|---|---|---|
+| v1 | 4 | frozen |
+| v2 | 6 | frozen |
+| v3 | 7 | frozen |
+| v4 | 9 | frozen |
+| v5 | 13 scorable + 1 historical-only | **frozen (latest, no v6 yet)** |
+
+Core principle: **a new architecture change must never silently redefine what "correct" meant historically.** Every dataset version is additive and byte-for-byte frozen once merged; regression comparison is per-sample (not aggregate-accuracy) with an explicit "any regression anywhere wins" precedence, so an unrelated improvement can never mask a real regression on a protected dimension. Dataset v5's regression comparator protects **15 separate dimensions per sample** (classification correctness, `shouldRetry`/`shouldCreateBug` correctness, evidence-grounding quality, three cross-browser correlation-quality dimensions, and five knowledge-authority dimensions added specifically because a live experiment exposed a real gap each one closes). Full detail, including the specific historical samples and each version's design rationale, is in the [Detailed Engineering History](#detailed-engineering-history) section below.
+
+```
+npm run eval:ai:v5          # scores Dataset v5
+npm run eval:regression:v5  # compares against frozen Baseline v5
+```
+
+**Verified at Roadmap #18 completion** (a historical milestone snapshot, not a permanent repository invariant - re-run `npm run test:unit` for the current count): 918 unit tests passing, including 93 provider-layer tests (27 Gemini / 17 Groq / 14 Mock / remainder shared contract-and-factory tests); Dataset/Baseline v1-v5 all `UNCHANGED`.
+
+## Continuous Integration
+
+GitHub Actions ([.github/workflows/cypress.yml](.github/workflows/cypress.yml)) runs on pushes to `main`, pull requests targeting `main`, and manual dispatch. Six jobs run per trigger: `Unit tests`, `QA Agent evaluation` (offline, informational), `Cypress - chrome`, `Cypress - edge`, `Cypress - firefox`, and `QA AI triage` (runs after all three browsers, at most once per workflow run).
+
+**If all three browsers pass, AI analysis is skipped entirely** (`No E2E failures detected; AI triage skipped.`) - zero provider calls happen on a green run. If any browser fails, the deterministic aggregator selects one primary failure, computes cross-browser correlation, and triggers exactly one AI analysis. **AI never controls whether the workflow passes or fails** - Cypress's own pass/fail is always authoritative, regardless of whether AI analysis ran, succeeded, or failed.
+
+Required branch-protection checks are `Unit tests`, `Cypress - chrome`, and `Cypress - edge`. `Cypress - firefox`, `QA Agent evaluation`, and `QA AI triage` are deliberately **not required** - each is informational while its real-world reliability is observed independently. (Firefox's own execution-environment split from Chrome/Edge, and CI history in general, are explained in [Detailed Engineering History](#detailed-engineering-history) below - this is normal engineering history for a live external site, not evidence of a current defect.)
+
+## Current Portability Status
+
+This section is the direct output of the Roadmap #19.1 architecture audit (read-only, source-verified, no code changed) - it states current reality plainly, neither overclaiming nor understating it.
+
+**Today, this repository is wired to exactly one project and one framework:**
+
+- Project / SUT: **Targomo POI** ([poi.targomo.com](https://poi.targomo.com))
+- E2E framework: **Cypress**
+- Browsers: **Chrome, Edge, Firefox**
+- AI providers: **Mock, Groq, Gemini**
+
+The system works correctly for this scope today - the limitations below matter for *introducing a second project or framework*, not for current production behavior.
+
+**Already project/framework-neutral, and expected to stay unchanged as Roadmap #19 proceeds:**
+
+- Provider abstraction (`providers/**`) and the `analyze()` contract
+- The deterministic policy layer (`agent-policy.js`)
+- The browser-correlation *algorithm* (it reasons over already-normalized evidence - `title`/`specFile`/`error.message` - not over any framework-native shape)
+- Evaluation/regression scoring semantics
+- Most of the system prompt's reasoning rules (grounding, history authority, correlation authority, knowledge authority)
+
+**Still project- or framework-bound today:**
+
+- No explicit, stable project identity exists anywhere in the codebase
+- The system prompt's persona sentence still names "Cypress" and `poi.targomo.com` directly, unconditionally
+- Failure collection (`collect-context.js`) parses Cypress/mochawesome report output directly - there is no separate framework-adapter boundary yet
+- The one `PROJECT_VERIFIED` knowledge unit has no explicit, machine-readable project scope
+- Knowledge selection silently defaults to a Cypress framework assumption when no framework is specified (which is always, today)
+- Flaky-test history is scoped by this repository's own workflow-file/job-name convention, not an explicit project/framework namespace
+
+This is why Roadmap #19 exists - see below.
+
+## Known Architectural Boundaries
+
+Stated as engineering seams and deliberately deferred abstractions, not defects:
+
+1. **No explicit `projectId`.** Nothing in the codebase names "which project" a failure belongs to in a stable, machine-readable way.
+2. **Hardcoded persona wording.** `qa-agent-prompt.js`'s system-prompt persona sentence names Cypress and `poi.targomo.com` directly - the single most concentrated current coupling point, on both the project and framework axis at once.
+3. **Direct Cypress/mochawesome parsing.** `collect-context.js` both parses the Cypress-native report format and injects project-specific constraint text in one file - there is no separate `CypressAdapter`/`FrameworkAdapter` module yet.
+4. **`PROJECT_VERIFIED` has no project scope.** The knowledge schema currently scopes units by browser and framework, but not by project - a future second project could, in principle, have a Targomo-verified fact selected for its own failures.
+5. **Implicit Cypress framework default.** The knowledge selector falls back to `framework = "cypress"` whenever framework identity isn't explicitly supplied - which is every call today, since nothing yet produces that field.
+6. **History has no explicit namespace.** Flaky-test history lookups are scoped by this repository's own hardcoded workflow filename and job-name string, not an explicit `(project, framework)` key.
+
+None of these affect current Targomo + Cypress behavior. They are the specific, source-verified reasons Roadmap #19 is scoped the way it is below.
+
+## Key Architecture Decisions
+
+- **One logical AI analysis per failing workflow, not one per browser.** Avoids duplicate/racing analyses, keeps cost and rate-limit exposure bounded, and gives the model real cross-browser evidence in a single call instead of splintering it across several.
+- **The LLM never owns the final `shouldCreateBug` decision.** Action-triggering decisions must stay deterministic and auditable; a model recommendation is an input to policy, never the policy itself.
+- **Knowledge is guidance, never evidence.** Curated engineering knowledge can broaden a hypothesis but is structurally forbidden from manufacturing a fact about the current run - this boundary is enforced by prompt contract and tested behaviorally, not just documented.
+- **Evaluation baselines are frozen once merged.** A regression target that can move is not a regression target - new evidence becomes a new, additive dataset version, never a retroactive edit to what "passing" used to mean.
+- **Provider adapters, not a provider-aware core.** Transport, auth, and vendor-native envelopes live entirely in `scripts/ai/providers/`; adding Gemini as a second real vendor required zero changes to prompt, policy, knowledge, or evaluation code - proving the boundary is real, not aspirational.
+- **No automatic provider fallback.** A misconfigured or failing provider fails the analysis honestly rather than silently substituting a different provider or a fabricated result - hidden fallback would also hide cost, semantics, and observability changes a human should see.
+- **A synthetic portability proof is planned before a real second framework.** Roadmap #19's plan is to prove the `NormalizedFailure` abstraction offline, with a synthetic fixture, before attempting a real Playwright integration - so the question "does the abstraction actually work" isn't conflated with "did I map one specific framework's reporter API correctly."
+
+## What this project demonstrates
+
+QA automation architecture and Cypress E2E engineering; GitHub Actions CI orchestration; deterministic cross-browser failure correlation; deterministic policy design constraining LLM output; AI provider abstraction proven across two structurally different vendors; offline AI evaluation/regression infrastructure; evidence-grounded prompt engineering; curated knowledge selection; and incremental, evidence-driven architecture refactoring (each roadmap item shipped independently, verified, and regression-checked against frozen history before the next one started).
+
+## Roadmap #19 — Project / Framework Portability
+
+**Status: #19.1 (read-only architecture audit) COMPLETE. #19.2 (first implementation stage) NOT STARTED.**
+
+The audit (summarized under [Current Portability Status](#current-portability-status) and [Known Architectural Boundaries](#known-architectural-boundaries) above) identified two genuinely separate axes, deliberately not collapsed into one generic "plugin" concept:
+
+### Phase A — Project portability
+
+Goals: an explicit, stable project identity; a small `ProjectProfile` data contract; isolating project-specific context (currently the hardcoded persona sentence and constraint list) behind it; giving `PROJECT_VERIFIED` knowledge an explicit project scope; a project-aware history namespace; and a fully offline proof using a second, synthetic project - no live site, no real provider calls.
+
+### Phase B — Framework portability
+
+Goals: explicit framework identity; a formally documented `NormalizedFailure` contract (largely already implicit in `context.json`'s shape today); isolating Cypress/mochawesome-specific parsing behind a `FrameworkAdapter`; a fully offline proof using a synthetic second framework adapter; and only then evaluating a real Playwright adapter as a second, heavier proof.
+
+**Explicitly not implemented yet, and not implied anywhere above:** `ProjectProfile`, `FrameworkAdapter`, a formal `NormalizedFailure` schema, real Playwright support, multi-project `PROJECT_VERIFIED` isolation, and a project/framework-aware history namespace. The diagram below is a **target**, not the current system - compare it against [High-level architecture (current)](#high-level-architecture-current) above.
+
+### Target architecture (future - not yet implemented)
+
+```
+ProjectProfile                       FrameworkAdapter
+  (stable project context,             (parses one framework's
+   never current-run evidence)          native result)
+        │                                     │
+        │                                     ▼
+        └───────────────────────────►  NormalizedFailure
+                                              │
+                        ┌─────────────────────┼─────────────────────┐
+                        ▼                     ▼                     ▼
+                     History             Correlation            Knowledge
+                        └─────────────────────┼─────────────────────┘
+                                              ▼
+                                          QA Core
+                                              │
+                                              ▼
+                                      Provider Factory   (UNCHANGED)
+                                              │
+                                              ▼
+                                validation + policy       (UNCHANGED)
+                                              │
+                                              ▼
+                                           report
+```
+
+The provider factory and the validation/policy layer are drawn unchanged deliberately: the #19.1 audit's whole point was confirming both are already project- and framework-neutral, and Roadmap #19 is scoped specifically to avoid touching either.
+
+## Roadmap #20 — Data Security & Governance (planned)
+
+**Status: NOT STARTED.** No controls described below exist in the codebase today. Planned topics, informed by choices Roadmap #18/#19 are already making (e.g. a future `ProjectProfile` becoming a natural place to scope per-project data policy): PII/secret redaction before data reaches a prompt, an AI-visible-evidence allowlist, provider governance (which vendors are permitted for which data), data retention policy, regional processing constraints, data classification, and security profiles. None of this is implied to exist by anything above.
+
+## Project structure
 
     ./cypress/e2e/tests/select_group_POI.cy.js
     ./cypress/e2e/tests/category_tree_behavior.cy.js
     ./cypress/e2e/tests/poi_data_requests.cy.js
 
-
-#### Project Object files structure
-
     ./cypress/e2e/pageObjects/categories.js
     ./cypress/e2e/pageObjects/map.js
     ./cypress/e2e/pageObjects/navigation.js
-    ./cypress/e2e//pageObjects/subCategories.js
-
-
-#### QA Agent files structure
+    ./cypress/e2e/pageObjects/subCategories.js
 
     ./scripts/ai/agent-policy.js
     ./scripts/ai/aggregate-browser-context.js
@@ -104,57 +352,108 @@ or, without picking a browser (uses Cypress's default):
     ./scripts/ai/evaluation/dataset.json ... dataset-v5.json
     ./scripts/ai/evaluation/baseline-v1.json ... baseline-v5.json
 
+## Commands for running tests
 
-### Continuous Integration
+#### Installation
 
-GitHub Actions ([.github/workflows/cypress.yml](.github/workflows/cypress.yml)) runs on:
+    git clone https://github.com/TarasovArtem/qa-ai-agent.git
+    cd qa-ai-agent
+    npm install
 
-- pushes to `main`
-- pull requests targeting `main`
-- manual workflow execution (`workflow_dispatch`)
+#### Opening Cypress GUI
 
-Five independent jobs run per workflow trigger:
+    npx cypress open
+
+or
+
+    npm run cypress:open
+
+#### Run all tests in a specific browser (browsers must be installed locally)
+
+    npm run chrome
+    npm run firefox
+    npm run edge
+
+or, without picking a browser (uses Cypress's default):
+
+    npm run test:e2e
+
+#### QA Agent / evaluation commands
+
+    npm run ai:collect          # build reports/ai/context.json from the last Cypress run
+    npm run ai:analyze          # run AI failure analysis (AI_PROVIDER=mock by default)
+    npm run test:unit           # scripts/ai/ unit tests (offline, no network)
+    npm run eval:ai:v5          # score Dataset v5
+    npm run eval:regression:v5  # compare against frozen Baseline v5
+
+## Provider configuration
+
+`AI_PROVIDER` (default `mock`), `AI_MODEL`, and `AI_API_KEY` are generic, provider-neutral application variables read from `scripts/ai/config.js`; an unrecognized `AI_PROVIDER` value throws a clear configuration error rather than silently falling back to a real provider.
+
+**Local development** - `AI_PROVIDER=mock`, no external API, no account, no key:
 
 ```
-                         ┌──────────────────┐
-                         │    Unit tests    │
-                         └──────────────────┘
-
-PR / push
-   │
-   ├──────────────→ QA Agent evaluation
-   │                  │
-   │                  ├─ eval:ai
-   │                  └─ eval:regression
-   │
-   ├→ Cypress matrix (container)
-   │    │
-   │    ├─ Chrome ─┐
-   │    │          │
-   │    └─ Edge ───┤
-   │               │
-   └→ Cypress - firefox (bare runner) ─┘
-                   ↓
-           Browser aggregation
-                   ↓
-          Multi-browser correlation
-                   ↓
-              QA AI triage
-                   ↓
-             ONE Groq call
-                   ↓
-        Policy-safe AI report
+npm run chrome        # produces reports/cypress/*.json
+npm run ai:collect     # produces reports/ai/context.json
+AI_PROVIDER=mock npm run ai:analyze   # produces reports/ai/ai-report.json (mock provider, no network call)
 ```
 
-- **Unit tests** - pure-JS tests for `scripts/ai/` (provider contract, prompt building, aggregation, evaluation/regression logic, etc. - see `npm run test:unit`). No browser, no network, no secrets.
-- **QA Agent evaluation** - runs `npm run eval:ai` and `npm run eval:regression` against the offline Evaluation Dataset/Baseline (see [Evaluation infrastructure](#evaluation-infrastructure) below). Fully offline, no AI provider calls. **Informational only** - see that section for what that means.
-- **Cypress matrix (Chrome/Edge)** - runs the E2E suite against the live app in Chrome and Edge, in parallel, inside a `cypress/included` Docker container (bundles Node/npm/browsers matching the Cypress version in `package.json`). Uploads screenshots for failed runs, videos, and (on failure) the structured test report as workflow artifacts. This job's own pass/fail is the suite's authoritative result - nothing downstream (aggregation, AI analysis) can turn a failed Cypress run green.
-- **Cypress - firefox (Roadmap #14C)** - runs the same, unmodified E2E suite in Firefox, but in a *different execution environment* from Chrome/Edge: directly on the bare `ubuntu-latest` runner (no container), with Firefox installed explicitly via `browser-actions/setup-firefox`. This split exists because Firefox previously hung during WebDriver session creation when run inside the same nested `cypress/included` container Chrome/Edge use - a container-sandboxing limitation of that specific setup (confirmed by a dedicated Roadmap #14B CI spike: the identical suite ran cleanly in ~80s once moved off the nested container), not evidence of a Firefox-specific application or test defect. Produces the same artifact shapes as Chrome/Edge (`cypress-screenshots-firefox`, `cypress-videos-firefox`, `cypress-report-firefox`, `qa-triage-input-firefox`) and the same authoritative-failure semantics - a failed Firefox E2E run fails this job, and nothing downstream can turn it green.
-- **QA AI triage** - runs after Chrome, Edge, *and* Firefox, at most once per workflow run regardless of how many browsers failed (see [QA Agent](#qa-agent-ai-failure-analysis) below). `browserCorrelation` is built from however many browsers actually ran/failed - two or three - using the same deterministic, N-browser-generic comparison either way; a Firefox-only failure reaches this job exactly like a Chrome- or Edge-only failure would.
+**GitHub Actions** - the current real, CI-wired provider:
 
-Required branch-protection checks are `Unit tests`, `Cypress - chrome`, and `Cypress - edge`. `Cypress - firefox` is deliberately **not required yet** - it is informational only while its real-world CI reliability is observed, exactly like `QA Agent evaluation` and `QA AI triage` already are. `QA Agent evaluation` and `QA AI triage` remain informational/diagnostic.
+```yaml
+AI_PROVIDER: groq
+AI_MODEL: openai/gpt-oss-120b
+AI_API_KEY: ${{ secrets.GROQ_API_KEY }}
+```
 
-### QA Agent (AI failure analysis)
+`GROQ_API_KEY` exists only as a GitHub repository secret - never committed, never in a `.env` file, never printed to a log. The workflow maps it to the generic `AI_API_KEY` variable so application code never learns Groq's name specifically.
+
+**Gemini (local/manual only - not wired into the GitHub Actions workflow):**
+
+```
+AI_PROVIDER=gemini
+AI_MODEL=gemini-3.6-flash
+AI_API_KEY=<your own Gemini API key>   # never commit a real key
+```
+
+There is no `GEMINI_API_KEY` repository secret and no Gemini step in the workflow - selecting `AI_PROVIDER=gemini` today only works locally, with your own key. See [Why Gemini exists](#why-gemini-exists) above for what has and hasn't been validated about this provider.
+
+---
+
+## Detailed Engineering History
+
+The sections below are the project's chronological engineering log: every roadmap item, in the order it shipped, with the exact evidence, scenario data, and design reasoning behind it. This is reference material for understanding *how* the current architecture (described above) was arrived at and verified - it is not required reading to understand what the system does today.
+
+### Current System Under Test
+
+The repository currently uses the [Targomo](https://poi.targomo.com) POI (points of interest) map application as its real E2E target/demo application - the Cypress suite in `cypress/` exercises Targomo's category tree UI and POI tile requests, and the QA Agent's failure triage is exercised against that suite's real failures.
+
+**Targomo is the current System Under Test. QA AI Agent is the project being developed in this repository.** See [Current Portability Status](#current-portability-status) above for exactly what is and is not yet portable beyond this project.
+
+A Playwright + TypeScript port of the same Cypress scenarios and Page Object Model, targeting the same Targomo application, lives at [TarasovArtem/TargomoPlaywright](https://github.com/TarasovArtem/TargomoPlaywright) (a separate repository, not part of this project, and not evidence that this repository itself supports Playwright - see [Roadmap #19](#roadmap-19--project--framework-portability) above).
+
+### Architectural Invariants
+
+These properties are enforced by design and construction, not merely by convention - most have dedicated regression tests:
+
+- **Cypress remains authoritative.** AI analysis is a diagnostic layer on top of the real test result; nothing downstream can turn a failed Cypress run green, and nothing upstream requires AI to run at all.
+- **One failing workflow → one logical AI analysis**, never one per browser - browser evidence is aggregated first, and a provider's own bounded transport retries stay inside that same one logical analysis.
+- **Provider adapters are transport-only.** Authentication, endpoint, and response-envelope extraction live in `scripts/ai/providers/`; prompt construction, semantic parsing, and policy live in core and never change per provider.
+- **Deterministic policy owns the final bug-creation decision** - only a `PRODUCT_BUG` classification may keep a model-recommended `shouldCreateBug: true`; every other classification is forced to `false`, regardless of what the model said.
+- **Knowledge is guidance, never evidence** - curated knowledge units can broaden a hypothesis but can never manufacture a fact about the current run, override direct evidence, browser correlation, history, or policy.
+- **Provider errors are normalized** to one shared, provider-neutral vocabulary (`AUTH`/`RATE_LIMIT`/`TIMEOUT`/`NETWORK`/`INVALID_RESPONSE`/`CONFIGURATION`/`UNKNOWN`) before the application reasons about a failure - never an HTTP status code or a provider name.
+- **No automatic provider fallback** - a misconfigured or failing provider fails the analysis honestly rather than silently substituting another provider or a fabricated result.
+- **Evaluation history is immutable once frozen** - every Dataset/Baseline version, once merged, is never rewritten; new evidence becomes a new, additive sample or a new version, never a retroactive edit.
+
+### Continuous Integration - job detail
+
+GitHub Actions runs six jobs per trigger: `Unit tests` and `QA Agent evaluation` start immediately and need no browser; `Cypress - chrome` and `Cypress - edge` run in parallel inside a `cypress/included` Docker container (bundles Node/npm/browsers matching the Cypress version in `package.json`); `Cypress - firefox` runs separately; `QA AI triage` runs last, after all three browsers.
+
+**Why Firefox has its own job, on the bare runner instead of the container:** Firefox previously hung during WebDriver session creation when run inside the same nested `cypress/included` container Chrome/Edge use - a container-sandboxing limitation of that specific setup, confirmed by a dedicated CI spike (Roadmap #14B): the identical, unmodified suite ran cleanly in ~80s once moved directly onto the bare `ubuntu-latest` runner, with Firefox installed explicitly via `browser-actions/setup-firefox`. This is infrastructure history, not evidence of a Firefox-specific application or test defect - the job produces the same artifact shapes and the same authoritative-failure semantics as Chrome/Edge (a failed Firefox E2E run fails this job, and nothing downstream can turn it green).
+
+Required branch-protection checks are `Unit tests`, `Cypress - chrome`, and `Cypress - edge`. `Cypress - firefox` is deliberately not required yet - informational only while its real-world CI reliability is observed, exactly like `QA Agent evaluation` and `QA AI triage` already are.
+
+### QA Agent (AI failure analysis) - full detail
 
 The QA Agent's AI backend is a swappable **provider abstraction** (`scripts/ai/providers/`), selected at runtime via the `AI_PROVIDER` environment variable.
 
@@ -188,83 +487,20 @@ raw model response (a string - never trusted as-is)
 validation / safeguards (scripts/ai/analyze-failure.js)
    │  JSON parsing, classification/confidence checks, arbitrary-wait guard
    ▼
-application action policy (scripts/ai/agent-policy.js) - see below
+application action policy (scripts/ai/agent-policy.js)
    ▼
 enriched AI report (reports/ai/ai-report.json) - includes provenance (providerAttempts, firstAttemptError)
    ▼
 PR comment (pull_request runs only)
 ```
 
-**Centralized triage, one AI call per run.** The browser matrix jobs (Chrome, Edge) never call an AI provider themselves - they only record their own pass/fail outcome and, on failure, a structured failure context. A separate, downstream `QA AI triage` job runs once per workflow run, aggregates every browser's result, and performs **at most one** real AI analysis call - never once per browser. On a fully green run, `QA AI triage` still runs but performs zero AI calls (`No E2E failures detected; AI triage skipped.`).
+This is a deliberate choice, not a bug: the project previously called [GitHub Models](https://docs.github.com/en/github-models), which was [fully retired by GitHub on 2026-07-30](https://github.blog/changelog/2026-07-30-github-models-is-now-retired/) (confirmed live - its inference API returned `410 Gone` for every request). The AI layer was refactored to this provider-neutral shape first, and Groq was added as the first real provider once that abstraction existed; Gemini was added second (Roadmap #18) to prove the abstraction generalizes to a second, structurally different vendor.
 
-**Multi-browser correlation** (since PR #33). When more than one browser fails, the aggregator still analyzes only one primary browser's failure (Chrome, then Edge, by priority) - but it now also builds deterministic `browserCorrelation` metadata from *every* browser's outcome and attaches it to that primary context before the (single) AI call: which browsers ran, which passed, which failed, which one is primary, and - only when at least two browsers failed with comparable evidence - whether their failures share the same signature (`true`/`false`), or `null` when that can't be determined. This gives the model cross-browser evidence (e.g. "the same failure also reproduced on Edge" or "Edge passed while Chrome failed") without ever increasing the number of AI calls or letting correlation alone decide a classification - see rule 10 in `scripts/ai/qa-agent-prompt.js` for the exact non-overclaiming guidance given to the model.
-
-**Provider contract:**
-
-```js
-provider.analyze({ systemPrompt, userPrompt }) → Promise<string>
-```
-
-A provider's only job is talking to an LLM and handing back its raw text response - it never returns a parsed/trusted QA report object. Everything downstream of that string (JSON parsing, classification enum checks, confidence range, evidence shape, the arbitrary-wait safeguard) is the QA Agent's responsibility, not the provider's - a provider that formats its output oddly, or a future provider from a different vendor, can't skip QA validation just because it's a different provider.
-
-The boundary is runtime-checked, not just documented: `providers/provider-contract.js` rejects a provider missing `analyze()` (or a non-empty-string response) with a clear error before it can reach `JSON.parse` or a retry loop. Provider failures are normalized to one shared `ProviderError` shape (`message`, `code` from a small provider-neutral set - `AUTH`/`RATE_LIMIT`/`TIMEOUT`/`NETWORK`/`INVALID_RESPONSE`/`CONFIGURATION`/`UNKNOWN`, `retryable`, `cause`) in `providers/provider-error.js`, so `analyze-failure.js`'s retry logic only ever asks "was this marked retryable?" - never an HTTP status code or a provider name. Each provider also exposes a plain `provider.name` string (`"mock"`, `"groq"`, or `"gemini"`, depending on which is configured), which the application attaches to the report as `analysis.provider` *after* the model response is validated - a provider never asserts its own identity inside the JSON it returns.
-
-**Three providers exist today**, used in three different places on purpose. Full detail (contract, transport differences, provenance, validation status) is in [Provider / Model Abstraction (Roadmap #18)](#provider--model-abstraction-roadmap-18) below:
-
-- **`MockProvider`** (`AI_PROVIDER=mock`) - makes no network call, returns an honest, schema-valid `UNKNOWN`/50%-confidence stub result. Used for **local development and all unit tests**.
-- **`GroqProvider`** (`AI_PROVIDER=groq`) - calls [Groq's](https://groq.com) OpenAI-compatible Chat Completions API. Used **only in GitHub Actions** - the sole provider currently wired into CI.
-- **`GeminiProvider`** (`AI_PROVIDER=gemini`) - calls [Google's Gemini](https://ai.google.dev) native `generateContent` REST API directly. Fully implemented and real-API-verified, but **not wired into CI** - selectable locally/manually via `AI_PROVIDER=gemini` with a real `AI_API_KEY`.
-
-This is a deliberate choice, not a bug: the project previously called [GitHub Models](https://docs.github.com/en/github-models), which was [fully retired by GitHub on 2026-07-30](https://github.blog/changelog/2026-07-30-github-models-is-now-retired/) (confirmed live - its inference API returned `410 Gone` for every request). The AI layer was refactored to this provider-neutral shape first, and Groq was added as the first real provider once that abstraction existed; Gemini was added second (Roadmap #18) to prove the abstraction generalizes to a second, structurally different vendor. Adding another provider later is a change scoped to `scripts/ai/providers/` plus `AI_PROVIDER`/`AI_MODEL`/`AI_API_KEY` - it does not touch context collection, prompts, PR comments, or the workflow; timeouts and provider-specific config validation are each that provider's own responsibility, not `analyze-failure.js`'s.
-
-There is intentionally **no fallback between providers, and no automatic multi-provider execution**. If a configured provider is missing `AI_API_KEY`/`AI_MODEL`, or its API call fails, the analyzer fails honestly (`fail()` / a warning in the workflow) rather than silently substituting a fabricated mock analysis or trying a different provider - "AI analysis unavailable" is always more honest than a fake result. Cypress's own screenshots, videos, and structured test report are collected independently and are unaffected either way (see the workflow's upload-artifact steps).
-
-When any E2E job fails, the centralized `QA AI triage` step analyzes the selected primary failure and classifies it as `PRODUCT_BUG`, `TEST_BUG`, `FLAKY_TEST`, `ENVIRONMENT`, `EXTERNAL_DEPENDENCY`, or `UNKNOWN`, before recommending a fix. It never changes whether the job passes or fails - it's a diagnostic layer on top of the real test result, not a gate: Cypress's own pass/fail is always what determines the workflow's final status, regardless of whether AI analysis ran, succeeded, or failed.
-
-#### Application action policy
-
-The model's classification, confidence, `shouldRetry`, and `shouldCreateBug` are a **recommendation**, never an authoritative action decision. A separate, deterministic application layer (`scripts/ai/agent-policy.js`) makes the actual call:
-
-- Only a `PRODUCT_BUG` classification may keep a model-recommended `shouldCreateBug: true`.
-- Every other classification (`TEST_BUG`, `FLAKY_TEST`, `ENVIRONMENT`, `EXTERNAL_DEPENDENCY`, `UNKNOWN`) has its `shouldCreateBug` forced to `false`, regardless of what the model suggested.
-
-This is a ceiling on which classifications *may* create a bug, not a floor that automatically files one for every `PRODUCT_BUG` - a separate confidence-threshold policy is future work (see [Roadmap](#roadmap)), not implemented today. There is currently **no automatic GitHub Issue creation** - `shouldCreateBug` is a field in the report/PR comment for a human to act on, not an automated trigger.
-
-The final report distinguishes the model's original recommendation from the application's final decision: each result's `shouldCreateBug` is the final, post-policy value, and a nested `policy` object (`policy.originalShouldCreateBug`, `policy.adjusted`) records the model's raw recommendation and whether policy actually overrode it - `policy.adjusted: false` means policy ran and found no override necessary, not that policy was skipped. The offline Evaluation Dataset schema curates the same distinction under its own flat field names (`actual.originalShouldCreateBug`, `actual.policyAdjusted`) - see the [Evaluation infrastructure](#evaluation-infrastructure) section for how this is used in offline evaluation.
-
-**Local development** - `AI_PROVIDER=mock`, no external API, no account, no key:
-
-```
-npm run chrome        # produces reports/cypress/*.json
-npm run ai:collect     # produces reports/ai/context.json
-AI_PROVIDER=mock npm run ai:analyze   # produces reports/ai/ai-report.json (mock provider, no network call)
-```
-
-**GitHub Actions** - the "AI failure analysis" step runs with:
-
-```yaml
-AI_PROVIDER: groq
-AI_MODEL: openai/gpt-oss-120b
-AI_API_KEY: ${{ secrets.GROQ_API_KEY }}
-```
-
-`GROQ_API_KEY` exists only as a **GitHub repository secret** (Settings → Secrets and variables → Actions) - it is never committed, never placed in a `.env` file, and never printed to a log; the workflow maps it to the generic `AI_API_KEY` application variable so that `scripts/ai/config.js` and `analyze-failure.js` stay provider-neutral and never learn Groq's name. `GITHUB_TOKEN` is unrelated and still used elsewhere in the pipeline (flaky-test history via the Actions API, posting PR comments) - never as an AI inference credential.
-
-**Gemini (local/manual only - not currently wired into the GitHub Actions workflow):**
-
-```
-AI_PROVIDER=gemini
-AI_MODEL=gemini-3.6-flash
-AI_API_KEY=<your own Gemini API key>   # never commit a real key
-```
-
-There is no `GEMINI_API_KEY` repository secret and no Gemini step in `.github/workflows/cypress.yml` - selecting `AI_PROVIDER=gemini` today only works locally, with your own key exported in your shell. See [Provider / Model Abstraction (Roadmap #18)](#provider--model-abstraction-roadmap-18) for what has and has not been validated about this provider.
-
-`AI_PROVIDER` (default `mock`), `AI_MODEL`, and `AI_API_KEY` are read from `scripts/ai/config.js`; an unrecognized `AI_PROVIDER` value throws a clear error rather than silently falling back to a real provider.
+The boundary is runtime-checked, not just documented: `providers/provider-contract.js` rejects a provider missing `analyze()` (or a non-empty-string response) with a clear error before it can reach `JSON.parse` or a retry loop. Provider failures are normalized to one shared `ProviderError` shape (`message`, `code` from a small provider-neutral set, `retryable`, `cause`) in `providers/provider-error.js`. Each provider also exposes a plain `provider.name` string (`"mock"`, `"groq"`, or `"gemini"`, depending on which is configured), which the application attaches to the report as `analysis.provider` *after* the model response is validated.
 
 ### Controlled experiments
 
-Before evaluation infrastructure existed, the QA Agent's real (Groq-backed) behavior was validated against four deliberately-introduced, pre-registered-ground-truth failure scenarios in CI. These four runs are now Dataset v1's only samples (see below) - historical, real model output, kept exactly as recorded, never rewritten to match a preferred answer:
+Before evaluation infrastructure existed, the QA Agent's real (Groq-backed) behavior was validated against four deliberately-introduced, pre-registered-ground-truth failure scenarios in CI. These four runs are now Dataset v1's only samples - historical, real model output, kept exactly as recorded, never rewritten to match a preferred answer:
 
 | Scenario | Ground truth | Actual (model) | Interpretation |
 |---|---|---|---|
@@ -273,7 +509,7 @@ Before evaluation infrastructure existed, the QA Agent's real (Groq-backed) beha
 | #4 Deterministic test bug, misleading history | `TEST_BUG` | `TEST_BUG` @ 0.68 | Pass |
 | #5 Real flaky test | `FLAKY_TEST` | `EXTERNAL_DEPENDENCY` @ 0.75 | Ambiguous boundary case - the controlled mechanism (a delayed/withheld HTTP response) genuinely overlaps both classifications' definitions; curated as a boundary case, not a clean model failure |
 
-### Evaluation infrastructure
+### Evaluation infrastructure (Dataset v1)
 
 An offline, deterministic layer for scoring the QA Agent's stored historical outputs against pre-registered ground truth - it never calls Groq, never re-runs an experiment, and never changes what actually happened during a real run.
 
@@ -301,230 +537,83 @@ Key design points:
 - **Ambiguous samples are excluded from strict classification accuracy** but remain fully scored for `shouldRetry`/`shouldCreateBug` - Experiment #5's boundary-case status doesn't get silently smoothed over into a clean pass or fail.
 - **Regression comparison is per-sample, not aggregate-accuracy-based.** A sample that goes from wrong to right while a different sample goes from right to wrong leaves aggregate accuracy unchanged, but is a real regression - the comparator is built specifically not to be fooled by that.
 - **`shouldCreateBug` correctness is a protected safety invariant** - any sample whose `shouldCreateBug` action goes from correct to incorrect is always a `REGRESSED` result, even if classification simultaneously improved and even for an ambiguous-classification sample.
-- **`QA Agent evaluation` (the CI check) is currently informational.** It runs `eval:ai` and `eval:regression` on every push/PR and shows the result in the job log; a `REGRESSED` comparison does **not** fail the job or block a merge today - only a technical failure (invalid dataset/baseline, a runtime crash) does. It is **not** a required branch-protection check.
+- **`QA Agent evaluation` (the CI check) is currently informational.** A `REGRESSED` comparison does **not** fail the job or block a merge today - only a technical failure (invalid dataset/baseline, a runtime crash) does. It is **not** a required branch-protection check.
 
-### Multi-browser evaluation (Dataset v2)
+### Multi-browser evaluation (Dataset v2, Roadmap #6)
 
-Roadmap #6. **Dataset v1 stays exactly as it was** - it predates multi-browser correlation entirely and is never mutated. Dataset v2 (`scripts/ai/evaluation/dataset-v2.json`) is a separate, additive dataset: the same four Dataset v1 samples (migrated byte-identical - ground truth, historical actual output, and existing quality fields are never re-curated) plus two new, correlation-aware samples from the real Controlled Multi-Browser Correlation Experiment:
+**Dataset v1 stays exactly as it was** - it predates multi-browser correlation entirely and is never mutated. Dataset v2 is a separate, additive dataset: the same four Dataset v1 samples (migrated byte-identical) plus two new, correlation-aware samples from the real Controlled Multi-Browser Correlation Experiment:
 
 - **Scenario A** (same-signature) - Chrome and Edge fail with an identical deterministic signature in the same workflow run.
 - **Scenario B** (different-signatures) - Chrome and Edge fail the same test, but with genuinely different deterministic signatures.
 
-Both were real, Groq-backed CI runs (PR #35 and #36, closed without merge after data collection - the controlled failures were reverted, same pattern as Controlled Experiments #2-#5).
+Both were real, Groq-backed CI runs (PR #35 and #36, closed without merge after data collection).
 
-Each Dataset v2 sample separates the **correlation fact** (what `browserCorrelation` actually observed - `correlation: { applicable, observed }`, migrated samples get `applicable: false, observed: null`) from the **correlation quality judgment** (three new `quality.*` fields, using the same `pass | partial | fail | not_applicable` vocabulary already used for `rootCause`/`evidence`/`recommendedFix`):
+Each Dataset v2 sample separates the **correlation fact** (what `browserCorrelation` actually observed) from the **correlation quality judgment** (`correlationConstruction`, `correlationTransport`, `correlationReasoning`, using the same `pass | partial | fail | not_applicable` vocabulary used throughout).
 
-- `correlationConstruction` - does the recorded correlation object correctly reflect the real, independently-verified browser outcomes for that run?
-- `correlationTransport` - is it proven (from the real `ai-report.json` artifact) to have reached the actual provider prompt path?
-- `correlationReasoning` - did the model's visible diagnosis materially and correctly use that evidence?
-
-**Current Baseline v2 (`scripts/ai/evaluation/baseline-v2.json`) - the state before any prompt change:**
-
-- Scenario A: `correlationConstruction = pass`, `correlationTransport = pass`, **`correlationReasoning = partial`**
-- Scenario B: `correlationConstruction = pass`, `correlationTransport = pass`, **`correlationReasoning = partial`**
-
-`partial` means correlation reached the model intact and the model's diagnosis was still correct and safe, but its visible reasoning did not cite the cross-browser evidence. This is a real, verified finding, not a defect that had been fixed as of Dataset v2/Baseline v2 themselves (Roadmap #6) - this baseline exists specifically so a *later*, separate, controlled prompt-improvement experiment could be measured against it. See [Correlation reasoning prompt improvement](#correlation-reasoning-prompt-improvement-roadmap-8) below for that follow-up work and its current status.
+**Current Baseline v2 - the state before any prompt change:** both Scenario A and Scenario B recorded `correlationConstruction = pass`, `correlationTransport = pass`, and **`correlationReasoning = partial`** - correlation reached the model intact and the diagnosis stayed correct and safe, but the model's visible reasoning didn't cite the cross-browser evidence. This baseline exists specifically so a later, controlled prompt-improvement experiment could be measured against it (see Roadmap #8 below).
 
 ```
 npm run eval:ai:v2           # scores Dataset v2 (6 samples), including correlation quality aggregates
 npm run eval:regression:v2   # compares the current stored evaluation against frozen Baseline v2
 ```
 
-Regression semantics for the three correlation dimensions mirror classification/action scoring exactly: an explicit ordering (`fail < partial < pass`, with `not_applicable` outside that ordering) drives per-sample `improvement`/`regression`/`unchanged` detection, and the same "any regression anywhere wins" precedence applies across *all* dimensions (classification, `shouldRetry`, `shouldCreateBug`, and all three correlation fields) - a correlation-reasoning improvement on one sample can never mask a classification or action-safety regression on another. As with Dataset v1, there is **no composite score** - correlation quality is reported as enum counts, never averaged into a single number.
-
-`eval:ai:v2`/`eval:regression:v2` now also run in the informational `QA Agent evaluation` CI job, alongside the existing v1 commands (`eval:ai`/`eval:regression`) - see Roadmap #7 below. Same informational semantics as v1: a `REGRESSED` result does not fail the job, only a genuine technical error (invalid dataset/baseline, sample-set mismatch) does.
-
 ### Correlation reasoning prompt improvement (Roadmap #8)
 
-Baseline v2 recorded a real, verified gap: `browserCorrelation` was constructed and transported to the model correctly on both Scenario A and Scenario B (`correlationConstruction = pass`, `correlationTransport = pass`), but the model's own visible diagnostic reasoning did not clearly demonstrate having used that cross-browser evidence (`correlationReasoning = partial` on both).
+**Phase 1 - prompt contract improvement (implemented):** the `browserCorrelation` rule in the system prompt was strengthened to explicitly distinguish `sameFailureSignature = true`/`false`/`null` semantics, require reconciling correlation with direct evidence rather than reasoning about it in isolation, and require making correlation's diagnostic role visible when materially relevant.
 
-**Phase 1 - prompt contract improvement (this stage, implemented):** the `browserCorrelation` rule in the QA Agent's system prompt (`scripts/ai/qa-agent-prompt.js`) was strengthened to: explicitly distinguish `sameFailureSignature = true` / `false` / `null` semantics (in particular, `null` - insufficient/incomparable evidence - is explicitly called out as *not* the same as `false`); require reconciling correlation with direct current-run evidence, source code, and history rather than reasoning about it in isolation, with direct evidence always taking precedence when they conflict; and require making correlation's diagnostic role visible in `rootCause`/`evidence` when it is materially relevant - while explicitly permitting it to remain inconclusive, and explicitly prohibiting satisfying that requirement by merely restating the raw `browserCorrelation` fields. The change is deliberately generic (no reference to Chrome/Edge specifically, no reference to the controlled-experiment scenarios that motivated it) so it applies equally to any current or future browser combination.
+**This prompt change has not yet been behaviorally validated against a live Groq run in this repository's merged history.** Dataset v2/Baseline v2 remain frozen at their pre-change state; `npm run eval:ai:v2`/`eval:regression:v2` still correctly report `UNCHANGED` at this stage - the evaluator scores stored historical output, it never calls a live model. A first controlled live re-validation was run on a separate, unmerged experiment branch and showed the target improvement with zero regressions, but that single observation was never frozen into Dataset v2/v3 directly - Roadmap #12 (below) closed the actual measurement gap this exposed.
 
-**This prompt change has not yet been behaviorally validated against a live Groq run.** Dataset v2 and Baseline v2 are intentionally untouched by this stage - they are frozen historical evidence and continue to record the pre-change `correlationReasoning = partial` baseline for Scenario A/B, exactly as before. `npm run eval:ai:v2`/`npm run eval:regression:v2` therefore still report `UNCHANGED`, which is the expected and correct result at this stage, not a sign the prompt change had no effect - the evaluator scores stored historical output, it never calls a live model.
-
-**Phase 2 - controlled live re-validation (not started):** separate controlled experiments (reproducing a same-signature and a different-signature multi-browser failure against the improved prompt) are required to measure the live effect.
-
-**Phase 3 - evaluation evidence/baseline update (not started):** only after Phase 2 produces real, Groq-backed results would Dataset v2/Baseline v2 be updated to reflect them.
+**Phase 2/3 (controlled live re-validation, evaluation update):** not started as a merged, dataset-frozen change.
 
 ### Evidence Grounding Evaluation Protection (Roadmap #9)
 
-A controlled experiment produced one unsupported factual root-cause claim: the model's top-level classification and action decisions (`TEST_BUG`, `shouldRetry = false`, `shouldCreateBug = false`) were correct, but one specific detail inside `rootCause` asserted something the supplied evidence did not actually establish. This is a single controlled observation, not a general claim about how the model behaves - it is documented here only because it exposed a real gap in the evaluation infrastructure, not because it demonstrates a systemic problem.
+A controlled experiment produced one unsupported factual root-cause claim (top-level classification/action stayed correct; one detail inside `rootCause` asserted something the evidence didn't establish) - a single controlled observation, documented because it exposed a real evaluation-infrastructure gap: `quality.fabricatedEvidence` already existed in the dataset schema but had no effect on scoring or regression.
 
-The gap: `quality.fabricatedEvidence` (a boolean, human-curated finding of exactly this kind) already existed in both Dataset v1 and Dataset v2's schema, and every existing historical sample already recorded `fabricatedEvidence: false` - but the field had no effect on scoring or regression. `scoring.js`/`scoring-v2.js` never surfaced it in `metrics`, and `regression.js`/`regression-v2.js` never compared it against the frozen baseline. A future curated sample recording `fabricatedEvidence: true` would previously have produced zero regression signal.
-
-This phase activates the existing field, purely in the offline evaluation layer:
-
-- `metrics.evidenceGrounding.fabricatedEvidence` now reports `{ false: N, true: N }` counts in both `npm run eval:ai` and `npm run eval:ai:v2` (a boolean count, deliberately not folded into the pass/partial/fail `qualitative` aggregates, and never combined into a composite score)
-- `npm run eval:regression`/`npm run eval:regression:v2` now compare `fabricatedEvidence` per sample against Baseline v1/v2: `false → true` is a regression, `true → false` is an improvement, `false → false`/`true → true` are unchanged (the latter reported as a known deficiency when applicable) - following the exact same "any regression anywhere wins" precedence already used for every other dimension, so a `fabricatedEvidence` regression can never be masked by an unrelated improvement (or vice versa), and aggregate true/false counts staying identical can never hide a per-sample swap
-- Baseline v1/v2 now record `fabricatedEvidence: false` for every existing sample (all currently `false`, matching Dataset v1/v2's historical values exactly)
-
-This phase does not change the production prompt, provider, application policy, Cypress, or GitHub Actions in any way, and does not modify any historical Dataset v1/v2 ground truth, actual output, or curated quality value. `npm run test:unit`/`npm run eval:regression`/`npm run eval:regression:v2` all report the same `UNCHANGED` result as before this phase.
+This phase activated the existing field purely in the offline evaluation layer: `metrics.evidenceGrounding.fabricatedEvidence` now reports counts, and regression comparison now treats `false → true` as a regression and `true → false` as an improvement, following the same "any regression anywhere wins" precedence as every other dimension. No production prompt, provider, policy, Cypress, or workflow behavior changed.
 
 ### Evidence Grounding Dataset Expansion (Roadmap #10)
 
-**Dataset v1 remains frozen. Dataset v2 remains frozen.** Dataset v3 (`scripts/ai/evaluation/dataset-v3.json`) is a separate, additive dataset: the same six Dataset v2 samples, migrated byte-identical (ground truth, historical actual output, and every existing quality field are never re-curated - a dedicated migration-integrity test proves this), plus one new sample from the controlled correlation-necessary experiment referenced in Roadmap #9: `experiment-41-correlation-necessary-grounding`.
-
-| Dataset | Samples |
-| --- | --- |
-| v1 | 4 |
-| v2 | 6 (v1's 4 + Scenario A + Scenario B) |
-| v3 | 7 (v2's 6 + the grounding sample) |
-
-**The grounding sample, one controlled historical observation:** the controlled defect was a genuine, deterministic test-layer locator mismatch (`subCategories.js`'s `getFoodCourt()` resolving different non-matching label text per browser), reproducing a same-defect-family, different-signature multi-browser failure. Top-level behavior stayed correct - `classification = TEST_BUG`, `shouldRetry = false`, `shouldCreateBug = false` - but the curated quality assessment records a real evidence-grounding failure: `rootCause = fail`, `evidence = fail`, `recommendedFix = partial`, `fabricatedEvidence = true`. Correlation construction and transport both passed (`pass`/`pass`), but `correlationReasoning = fail` - the omitted correlation evidence directly contributed to the unsupported root-cause claim. This is not a general claim that the model fabricates evidence; it is one curated, verified data point, encoded so a future prompt change can be measured against it.
-
-`npm run eval:ai:v3`/`npm run eval:regression:v3` score and regression-protect Dataset v3/Baseline v3 exactly like v1/v2 (`scoring-v3.js`, `regression-v3.js`, same "any regression anywhere wins" precedence, same per-sample - never aggregate-only - comparison), reusing Roadmap #9's `fabricatedEvidence` semantics without modification.
-
-**Known-deficiency semantics, not an automatic regression:** Baseline v3 freezes the grounding sample's `fabricatedEvidence = true` as its starting state, exactly the same way Baseline v1 already freezes `experiment-2-broken-selector`'s classification failure as a known deficiency rather than a live regression. `npm run eval:regression:v3` therefore reports `Status: UNCHANGED` today, listing `experiment-41-correlation-necessary-grounding fabricatedEvidence` under "Known deficiencies" - not under "Regressions". If a future prompt change causes this specific sample to be re-evaluated with `fabricatedEvidence: false`, that is a real, regression-comparator-recognized `IMPROVEMENT`; `fabricatedEvidence` staying `true` is `UNCHANGED`, not a fresh regression against itself.
-
-**Known limitation (unchanged since Roadmap #9, not something this phase fixes):** `rootCause`/`evidence`/`recommendedFix` are aggregated in `scoring-v3.js`'s `metrics.qualitative`, but - like v1/v2 - are **not** individually per-sample regression-protected in `regression-v3.js`. Only `classification`/`shouldRetry`/`shouldCreateBug`/`fabricatedEvidence`/the three `correlation*` dimensions are. A future sample where `rootCause` silently degrades from `pass` to `fail` would not, on its own, flip `eval:regression:v3`'s status.
-
-This phase does not change the production prompt, provider, application policy, Cypress, or Dataset v1/v2/Baseline v1/v2 in any way. Dataset v3/Baseline v3 are **not** part of GitHub Actions in this phase - `QA Agent evaluation` still runs only the v1/v2 commands; a v3 CI rollout (mirroring Roadmap #7's v2 rollout) is a separate, future change.
+Dataset v3 is additive over Dataset v2 (byte-identical migration, proven by a dedicated test) plus one new sample: `experiment-41-correlation-necessary-grounding`, a genuine, deterministic test-layer locator mismatch that reproduced a same-defect-family, different-signature multi-browser failure. Top-level behavior stayed correct (`TEST_BUG`, `shouldRetry=false`, `shouldCreateBug=false`), but the curated quality assessment records a real evidence-grounding failure (`rootCause=fail`, `evidence=fail`, `fabricatedEvidence=true`, `correlationReasoning=fail`) - frozen as a known deficiency in Baseline v3, not smoothed over, specifically so a future prompt change could be measured against it.
 
 ### Evidence Grounding Prompt Improvement (Roadmap #11)
 
-**Status: IMPLEMENTED / READY FOR LIVE VALIDATION.** The production prompt (`scripts/ai/qa-agent-prompt.js`) now distinguishes, inside every free-text field it asks the model to write (not only the `evidence` array), three epistemic states:
-
-- an **observed fact** - something the supplied evidence (current-run error/assertion text, source code, deterministic `browserCorrelation` fields, history, or other explicitly supplied context) directly establishes;
-- a **supported inference** - a reasonable conclusion that goes beyond what is directly observed but stays grounded in and consistent with the evidence available; allowed, but must never be stated as if it were an observed fact;
-- **unknown / not established** - a specific mechanism the evidence doesn't let the model pin down; the model is explicitly told to say so plainly rather than inventing a plausible-sounding cause merely because it would explain the symptoms.
-
-**High-level classification confidence is independent from mechanism confidence.** The rule states directly that a confident, well-evidenced classification never needs an unproven mechanism to support it, and never licenses inventing one - the model's certainty about *what* happened and its certainty about *why* it happened in mechanistic detail are treated as independent, and the prompt explicitly says lowering the first is never required just because the second is unresolved.
-
-This is additive to, not a rewrite of, the existing rules:
-
-- **Correlation stays evidence, not causal proof** - `browserCorrelation`'s existing true/false/null semantics (rule 10) are untouched; the new rule only adds that a signature comparison result is never automatic proof of *why* signatures differ, and the model must not invent a browser-specific mechanism merely because they do.
-- **History still cannot manufacture a current-run fact** - rule 8 is untouched; the new rule reaffirms that history may weigh a hypothesis but can never stand in for evidence the current run doesn't actually provide.
-- **`recommendedFix` stays within the same evidence boundary** - if the exact mechanism is unknown, the model may recommend a diagnostic next step, a fix grounded only in what was actually established, or state what additional evidence would be needed - never a fix premised on an unproven cause, and rule 4's prohibition on arbitrary waits/weakened assertions still applies.
-
-No output-schema change was required or made - `rootCause`/`evidence`/`recommendedFix` keep their existing shape; this is a prompt-contract change to what may be *said* inside those fields, not a new field.
-
-**This has not yet been behaviorally validated against a live model.** Dataset v3 and Baseline v3 are intentionally untouched by this phase - `experiment-41-correlation-necessary-grounding` still records its frozen historical `fabricatedEvidence = true` / `rootCause = fail` / `evidence = fail` / `recommendedFix = partial` / `correlationReasoning = fail` finding, exactly as before. `npm run eval:ai:v3`/`npm run eval:regression:v3` therefore still report `Status: UNCHANGED`, with that sample still listed as a known deficiency - this is expected, not a sign the prompt change had no effect. The evaluator scores stored historical output; it never calls a live model. A separate, later, controlled live re-validation is required to measure any actual behavioral effect.
-
-A first controlled live re-validation has since been run (a separate, unmerged experiment branch/PR, not part of this repository's merged history) and produced one observation of `fabricatedEvidence` moving `true` -> `false` against the improved grounding prompt, with classification/`shouldRetry`/final `shouldCreateBug` preserved and `rootCause`/`evidence`/`recommendedFix`/`correlationReasoning` all improving alongside it, with zero regressions on any tracked dimension. That result is exactly one live observation, not statistical proof of general improvement, and it has **not** been frozen into Dataset v3, Baseline v3, or any new dataset version - Roadmap #12 (below) exists specifically to close a measurement gap this observation exposed *before* any such freezing is considered.
+The production prompt now distinguishes OBSERVED FACT / SUPPORTED INFERENCE / UNKNOWN inside every free-text field, not only `evidence` (this is the rule now summarized under [Evidence grounding](#evidence-grounding) above). A first controlled live re-validation (unmerged experiment branch) showed `fabricatedEvidence` moving `true → false` against the improved prompt with zero regressions - one live observation, not statistical proof of general improvement, and not yet frozen into a dataset at that point (Roadmap #12, next, closed that gap).
 
 ### Qualitative Regression Protection (Roadmap #12)
 
-**Status: IMPLEMENTED.** Evaluation-infrastructure-only change - no production prompt, provider, application policy, Cypress, or workflow behavior changed. `rootCause`, `evidence`, and `recommendedFix` were already curated per sample in Dataset v1/v2/v3 and already reported in `eval:ai`/`eval:ai:v2`/`eval:ai:v3`'s aggregate output, but `regression.js`/`regression-v2.js`/`regression-v3.js` never compared them per sample against a frozen baseline - a future change could have improved `fabricatedEvidence` while silently degrading `rootCause`/`evidence`/`recommendedFix` on some sample, and the regression comparator would not, by itself, have reported it.
-
-Baseline v1/v2/v3 now each carry per-sample `rootCause`/`evidence`/`recommendedFix` fields, mechanically copied from the corresponding dataset's own curated `quality` fields when this change was made - never recurated, never re-judged. All three baseline versions were extended (not just v3): the three qualitative dimensions were already curated identically, with the same `pass`/`partial`/`fail`/`not_applicable` enum, across Dataset v1/v2/v3, so extending every baseline version was a purely additive, mechanically-derived change rather than a rewrite of historical meaning.
-
-Qualitative ordering, reused unchanged from the correlation-quality comparator already established for Roadmap #8's correlation dimensions: `fail < partial < pass`, with `not_applicable` outside that ordering (both sides `not_applicable` is unchanged; either side alone is informational, never silently scored as a quality regression or improvement). `fail -> partial`/`fail -> pass`/`partial -> pass` are improvements; `pass -> partial`/`pass -> fail`/`partial -> fail` are regressions; same-to-same is unchanged. No composite/weighted/overall quality score exists anywhere in this codebase, before or after this change - `rootCause`/`evidence`/`recommendedFix` remain three separate tracked dimensions, exactly like every other protected dimension.
-
-The existing "any regression anywhere wins" precedence is unchanged and now spans ten dimensions per sample: classification, `shouldRetry`, `shouldCreateBug`, `fabricatedEvidence`, `rootCause`, `evidence`, `recommendedFix`, `correlationConstruction`, `correlationTransport`, `correlationReasoning`. A single regression on any one of them, for any one sample, still outweighs any number of simultaneous improvements elsewhere - proven with mandatory per-sample masking tests (aggregate `pass`/`partial`/`fail` counts staying identical while one sample regresses and another improves) in addition to the standard transition-table and mixed-regression tests. Experiment #41's frozen `rootCause = fail` / `evidence = fail` deficiencies (and `experiment-2-broken-selector`'s frozen `recommendedFix = fail` deficiency in every dataset version) now show up explicitly as known deficiencies rather than an untracked gap, and remain `UNCHANGED` - not a new regression - for as long as they stay frozen.
+Evaluation-infrastructure-only change: `rootCause`/`evidence`/`recommendedFix` were already curated per sample but never individually regression-protected. Baseline v1/v2/v3 were extended (mechanically, from already-curated fields, never re-judged) so a future change that improved one dimension while silently degrading another would now be caught. The "any regression anywhere wins" precedence now spans ten dimensions per sample.
 
 ### Additive Post-Prompt Evaluation Dataset v4 (Roadmap #13)
 
-**Status: IMPLEMENTED / READY FOR REVIEW.** Evaluation-infrastructure-only change - no production prompt, provider, application policy, Cypress, or GitHub Actions workflow modified, and no live Groq calls made. Dataset v1/v2/v3 and Baseline v1/v2/v3 remain byte-for-byte frozen; Dataset v4/Baseline v4 are a new, separate, additive pair of files.
-
-Dataset v4 = all 7 Dataset v3 samples (migrated byte-for-byte, proven by a dedicated migration-integrity test) + two new samples recording two independent, real controlled re-validations of Experiment #41's exact scenario against the merged Roadmap #11 grounding prompt:
-
-- `experiment-45-post-prompt-grounding-revalidation` - the first post-prompt observation (PR #45, closed without merge). The live provider's first response was malformed JSON; a retry on the same commit succeeded.
-- `experiment-47-post-prompt-grounding-revalidation` - the second, fully independent post-prompt observation (PR #47, closed without merge, on a separate branch from the first). The provider succeeded on its first attempt - no retry. This run also independently exercised the application-level `shouldCreateBug` safeguard: the raw model recommendation was `true`, and policy correctly forced the final result to `false`.
-
-Both new samples are stored as **separate, distinct** dataset entries - never averaged or collapsed into one synthetic "combined" result - so the evaluation history reflects the actual chronology: Experiment #41 remains the pre-prompt historical deficiency (`fabricatedEvidence = true`, `rootCause = fail`, `evidence = fail`, `recommendedFix = partial`, `correlationReasoning = fail`, completely unmodified), and each post-prompt observation is its own frozen record.
-
-Both post-prompt observations independently showed `fabricatedEvidence = false`, with `classification = TEST_BUG`, `shouldRetry = false`, and final `shouldCreateBug = false` preserved, and `rootCause`/`evidence`/`recommendedFix`/`correlationReasoning` all curated `pass` after independent re-verification against the real CI artifacts (not merely re-stated from a prior report). **This is repeatability evidence for one fixed controlled scenario, not proof that the grounding improvement generalizes to arbitrary failures** - two consistent observations of the same defect is meaningfully more than one, but still far short of a claim about general model behavior.
-
-Provenance that differs meaningfully between the two runs is preserved, not discarded or averaged away: `metadata.providerAttempts` (2 vs 1), `metadata.firstAttemptError` (the exact malformed-JSON error text vs `null`), and `actual.originalShouldCreateBug`/`actual.policyAdjusted` (the raw-vs-final `shouldCreateBug` divergence that only the second run exhibited). These are historical/diagnostic facts about *how* an observation was produced, not quality judgments - they validate against `dataset-v4-schema.js` but are never read by `scoring-v4.js` or folded into any aggregate, and `regression-v4.js` never compares or tallies them, proven by dedicated tests showing that changing `providerAttempts` or `policyAdjusted` alone never flips the regression verdict.
-
-Baseline v4 extends Baseline v3 additively with both new samples frozen at their independently-verified state (`classificationStatus: pass`, `shouldRetryCorrect: true`, `shouldCreateBugCorrect: true`, `fabricatedEvidence: false`, `rootCause`/`evidence`/`recommendedFix`/`correlationConstruction`/`correlationTransport`/`correlationReasoning`: all `pass`). `regression-v4.js` protects the same ten dimensions per sample as `regression-v3.js` (Roadmap #12), with the same "any regression anywhere wins" precedence, proven again with per-sample masking tests scoped to the two new samples.
-
-`npm run eval:ai:v4` / `npm run eval:regression:v4` are available locally and are **fully offline** - Dataset v4 is **not** added to GitHub Actions in this phase; `QA Agent evaluation` continues to run only the v1/v2/v3 commands it already ran before this change.
+Dataset v4 = all 7 Dataset v3 samples (byte-for-byte migrated) + two new, fully independent, real controlled re-validations of Experiment #41's exact scenario against the merged Roadmap #11 grounding prompt (`experiment-45`, `experiment-47`). Both independently showed `fabricatedEvidence=false` with all qualitative dimensions curated `pass` after re-verification against real CI artifacts - meaningful repeatability evidence for one fixed scenario, explicitly not claimed as proof the improvement generalizes to arbitrary failures. `experiment-47` also independently exercised the `shouldCreateBug` safeguard: the raw model recommendation was `true` for a non-`PRODUCT_BUG` classification, and policy correctly forced the final result to `false`.
 
 ### QA Knowledge / Skills Layer Foundation (Roadmap #15)
 
-**Status: IMPLEMENTED / READY FOR REVIEW.** Adds the storage, validation, and deterministic offline-selection foundation for a curated QA Knowledge Layer - `scripts/ai/knowledge/`. This is a foundation only: **the production prompt is not wired to it yet** (see Roadmap #16 below).
+Added the storage, validation, and deterministic offline-selection foundation for the Knowledge Layer, as a foundation only - not yet wired into the production prompt at this stage. Initial corpus: 4 curated units. `selector.js` uses only signals available before the provider is ever called, never anything model-generated.
 
-Knowledge is stored as small, atomic, schema-validated JSON units (`scripts/ai/knowledge/units/*.json`), never as one giant `skills.md` - each unit carries `id`, `category` (`PROJECT`/`GENERAL_QA`/`CROSS_BROWSER`/`FRAMEWORK`/`CI`), `sourceType` (`PROJECT_VERIFIED`/`CONTROLLED_EXPERIMENT`/`CURATED_INTERNAL`/`CURATED_EXTERNAL`), `source`, `verifiedAt`, `tags`, `appliesTo` (browser/framework scoping), `statement`, and `priority`. `schema.js` validates a single unit; `loader.js` reads every file under `units/`, validates each one, and fails loudly (not silently) on invalid JSON, a schema-invalid unit, or a duplicate id - a curated knowledge file is always human-authored, so an authoring mistake must be visible in tests/CI, never quietly skipped.
+### Production Knowledge Integration (Roadmap #16, #16B, #16C, #16D, #16E)
 
-The initial production corpus contains **4 curated units** (`project-firefox-execution-environment-split`, `cross-browser-differing-signature-caution`, `qa-timeout-error-multiple-causes`, `framework-cypress-retry-timeout-semantics` - 1 `PROJECT_VERIFIED`, 3 `CURATED_INTERNAL`, 0 `CURATED_EXTERNAL`, 0 `CONTROLLED_EXPERIMENT`). Each is deliberately generalized, reusable guidance - not a copy of any one historical experiment/PR/run.
+Wired Roadmap #15's subsystem into the real production prompt under an explicit guidance-only authority rule (now summarized under [Knowledge Layer](#knowledge-layer) above). An independent review found two curated tags were overly broad and corrected them (#16B/#16B.1). The exact knowledge units a given analysis received are now persisted in `ai-report.json` for reproducibility (#16C).
 
-`selector.js` implements `selectKnowledge(context, units, options)`: a **deterministic, fully offline** selection mechanism requiring **zero AI provider calls** of any kind (no embeddings, no vector search, no LLM-based selection). It uses only signals available *before* the provider is ever called - failed-test error text/titles/spec paths, `relevantFiles` paths, `browserCorrelation`, `knownProjectConstraints`, and the browser/framework identity - and deliberately never reads `classification`, `rootCause`, `evidence`, `recommendedFix`, `confidence`, or `shouldCreateBug`, since none of those exist yet at selection time and using them would silently require a second AI phase. Units are structurally scoped by `appliesTo.browsers`/`appliesTo.frameworks`, then ranked by **relevance (match score) first**, with `priority` and `id` only as deterministic tie-breaks - a high-priority but irrelevant unit can never displace a relevant one. Selection respects a hard budget (`maxUnits = 5`, `maxChars = 2000` by default) without ever truncating a statement; a unit that would exceed the remaining budget is skipped, not cut short. Zero matching knowledge is a normal, valid outcome (`[]`, never an error), and independently relevant-but-conflicting units may coexist in the result - the model/evidence contract (Roadmap #11), not the selector, is responsible for resolving guidance conflicts.
+**Controlled Live Knowledge Validation (#16D):** five controlled, live Groq-backed observations (K1-K5) validated the knowledge-authority invariants end-to-end - each a disposable branch/PR closed without merge. K1 and K3 each surfaced one real reasoning-quality finding (a real-evidence-source-but-invalid-inference pattern).
 
-**Knowledge is GUIDANCE ONLY, never current-run EVIDENCE.** By design and by construction, knowledge cannot override direct current-run evidence, cannot override `browserCorrelation`, cannot override history semantics (Roadmap #8), and cannot override application policy (`agent-policy.js`'s `shouldCreateBug` ceiling) - the knowledge subsystem currently has no write path into `context.json`, `ai-report.json`, or any policy decision at all, since nothing calls it from production code yet.
+**Dataset v5 / Baseline v5 (#16E) - status: implemented, merged, evidence lock finalized.** Dataset v5 is additive over v4 (9 samples migrated byte-identical) plus four new live samples from K1/K3/K4/K5 (13 scorable total). K2 is deliberately not scorable - its original hypothesis was falsified by legitimate dynamic selection, so it's preserved as a structurally separate historical observation. `regression-v5.js` protects 15 dimensions per sample (10 inherited + 5 new: `knowledgeSelectionCorrect`, `knowledgeUsage`, `knowledgeGrounding`, `modelShouldCreateBugCorrect`, `inferenceQuality`), each justified by a concrete K1-K5 finding.
 
-Not part of this phase: production prompt integration (`qa-agent-prompt.js`/`buildUserPrompt()` are untouched), any `relevantKnowledge` field on the context payload, and a `knowledgeGrounding` evaluation dimension. `CURATED_EXTERNAL` existed in the schema from this phase onward so a future change wouldn't require a breaking migration; no such unit existed yet at this point - see Roadmap #17 below for when the first ones were added. Dataset v1-v4 and Baseline v1-v4 remain byte-for-byte unmodified.
-
-**Proposed future contract (Roadmap #16, not implemented yet):** a `relevantKnowledge` key on the `buildUserPrompt()` payload, labeled explicitly as *"Relevant curated QA knowledge. Interpretive guidance only; not evidence about the current run."* - it may support an inference or suggest a diagnostic next step, but may never establish a fact, override evidence, override `browserCorrelation`, override history semantics, or override policy.
-
-### Production Knowledge Integration (Roadmap #16)
-
-**Status: IMPLEMENTED / READY FOR REVIEW.** Wires Roadmap #15's knowledge subsystem into the real production QA Agent analysis path. `analyze-failure.js`'s `buildFailureReport()` calls `computeRelevantKnowledge(context)` - a thin wrapper reusing `loadKnowledgeUnits()`/`selectKnowledge()` directly, with zero duplicated logic - and attaches the result onto `context.relevantKnowledge` *before* `runProviderAnalysis()` ever builds the prompt, exactly mirroring how `history` is already threaded through. `qa-agent-prompt.js`'s `buildUserPrompt()` renders it as a plain JSON array field, and a new system-prompt rule 12 establishes the authority contract.
-
-**Knowledge is GUIDANCE ONLY, never current-run EVIDENCE - now enforced in the real prompt, not just designed.** Rule 12 states this explicitly: a knowledge statement may broaden hypotheses, suggest a diagnostic direction, or describe known framework/project behavior, but must never by itself establish what happened in the current run, override direct evidence, override `browserCorrelation`, override history semantics (rule 8), or be copied into `evidence` as though it were something this run's own data showed. If a knowledge statement conflicts with current-run evidence, the evidence wins. This extends rule 11's OBSERVED FACT / SUPPORTED INFERENCE / UNKNOWN grounding contract rather than replacing it. Application policy (`agent-policy.js`) remains structurally unreachable by knowledge content: the model has no awareness of policy at all, and `shouldCreateBug` is gated after model output regardless of what knowledge was present.
-
-**Relevance correction (Roadmap #16B/#16B.1).** An independent review found two curated units' tags were overly broad: `framework-cypress-retry-timeout-semantics`'s bare `"cypress"` tag matched the selector's default framework marker (present in every real context, since none set `context.frameworks`) regardless of topical relevance, and `qa-timeout-error-multiple-causes`'s bare `"assertion"` tag matched any Cypress `"AssertionError:"`-prefixed message. Both were removed, leaving only genuinely topical tags (`retry`/`retry-ability`/`timeout` and `timed out retrying`/`timeout`/`cy.get` respectively). Selection is now correctly empty for element-not-found, network/HTTP, deterministic-assertion, and generic-error failures, while still firing correctly for genuine timeout/retry evidence and cross-browser/Firefox scenarios - proven by a dedicated selector regression suite and two independent mutation tests (re-introducing each broad tag reliably breaks the corresponding new exclusion tests).
-
-**Observability (Roadmap #16C).** The exact knowledge units a given analysis's provider call actually received are now persisted in `ai-report.json`'s `sourceContext.relevantKnowledge` - read directly from `context.relevantKnowledge` (the same value already threaded into the prompt), never recomputed via a second `selectKnowledge()` call, so the frozen artifact can never drift from what the model actually saw. `[]` is written explicitly when nothing matched, distinguishing "no knowledge selected" from "not recorded."
-
-**Single-call invariant preserved throughout.** Knowledge loading/selection is a synchronous, offline, zero-argument-to-provider computation - `computeRelevantKnowledge()` has no provider dependency and cannot be a Promise. `provider.analyze()` is still called exactly once per analysis, proven by call-count tests and by a mutation test that temporarily introduced a second call (the call-count tests correctly failed, then were restored).
-
-Not part of this phase: external/curated-external knowledge (no `CURATED_EXTERNAL` unit existed yet at this point - see Roadmap #17 below), Dataset v5/Baseline v5 (Dataset v1-v4/Baseline v1-v4 remain byte-for-byte unmodified), and any live-model validation of knowledge-assisted behavior - see Roadmap #16D below.
-
-### Controlled Live Knowledge Validation (Roadmap #16D)
-
-**Status: FIRST EVIDENCE SERIES COMPLETE.** Five controlled, live (Groq-backed) observations validated the knowledge-authority invariants Roadmap #16 designed but never behaviorally tested: K1 (genuinely relevant Cypress timeout/retry knowledge, used correctly - `shouldRetry` stayed `false` despite timeout wording), K2 (an original `relevantKnowledge=[]` hypothesis that was falsified by legitimate dynamic cross-browser selection, and in the process exposed a real selector overbreadth defect later fixed by PR #54), K3 (cross-browser differing-signature caution correctly constrained interpretation of two same-root-cause-but-different-signature failures, and separately surfaced a raw-model self-inconsistency - `shouldCreateBug=true` alongside a `TEST_BUG` classification - that application policy correctly corrected), K4 (project-specific Firefox knowledge correctly kept subordinate to direct evidence, including appropriate non-use), and K5 (a true, full-context `relevantKnowledge=[]` control, confirming the production selector genuinely supports and delivers zero-knowledge cases end-to-end).
-
-Every observation was a disposable branch/PR closed without merge after evidence capture, with a revert commit preserving the branch; zero production code, knowledge corpus, selector, prompt, policy, or workflow files were modified by any of the five. An independent consolidation review classified K1 and K3 as each carrying one real reasoning-quality finding (a real-evidence-source-but-invalid-inference pattern - see Roadmap #16E below) and recommended two optional strengthening repeats (R1, R2) before a durable claim is curated into a dataset; neither has been run.
-
-### Dataset v5 / Baseline v5 (Roadmap #16E)
-
-**Status: IMPLEMENTED, MERGED, EVIDENCE LOCK FINALIZED.** Dataset v5 (`scripts/ai/evaluation/dataset-v5.json`) is additive over Dataset v4 exactly like every prior version: all 9 Dataset v4 samples migrated byte-identical (proven by a dedicated deep-equality test against every old field, not just sample ids), plus four new live samples from Roadmap #16D (`K1-relevant-timeout-knowledge`, `K3-cross-browser-differing-signatures`, `K4-firefox-knowledge-vs-direct-evidence`, `K5-zero-relevant-knowledge`) - 13 scorable samples total. K2 is deliberately **not** a scorable sample: its original `relevantKnowledge=[]` hypothesis was falsified, so it is preserved instead as a structurally separate `dataset.historicalObservations` entry that `scoring-v5.js`/`regression-v5.js` never read - proven by a test asserting identical metrics with and without that field present.
-
-`regression-v5.js` protects 15 dimensions per sample (the 10 already protected in v1-v4, plus five new ones, each justified by a concrete Roadmap #16D finding rather than added speculatively):
-
-- `knowledgeSelectionCorrect` - derived (never curated) from a new `sample.knowledge` block (`expectedPresentUnitIds`/`expectedAbsentUnitIds`/optional `expectedExactSelectedUnitIds`/`actualSelectedUnitIds`), protecting against the exact selector-overbreadth defect K2 exposed. Presence/absence subset semantics are the default; an exact-set assertion is opt-in only, used where the curator genuinely knows the complete frozen context (K5's `expectedExactSelectedUnitIds=[]`/`actualSelectedUnitIds=[]`).
-- `knowledgeUsage` / `knowledgeGrounding` - curated ternaries protecting against selected-but-subordinate knowledge corrupting a diagnosis, or a knowledge statement being laundered into `evidence` as an observed fact. K4 is the canonical PASS-via-appropriate-non-use case: the Firefox unit was correctly selected but never referenced, since direct evidence was already sufficient - the schema does not require explicit knowledge mention to earn `pass`.
-- `modelShouldCreateBugCorrect` - derived from `actual.originalShouldCreateBug` vs `groundTruth.shouldCreateBug` (never from `policyAdjusted` or `classification`), separating the model's *raw* decision from the existing `shouldCreateBug` dimension's *final, post-policy* one. K3 is the concrete divergence: raw model wrong (`originalShouldCreateBug=true` for a `TEST_BUG`), final system correct (`finalShouldCreateBug=false` via `agent-policy.js`) - re-deriving this dimension against the already-frozen Dataset v4 fields also retroactively surfaced the identical pattern in the inherited `experiment-47` sample, without altering any of its stored fields.
-- `inferenceQuality` - a human-curated ternary (plus `null` for "not yet curated," kept structurally distinct from `not_applicable`) protecting against a real-evidence-but-invalid-conclusion pattern that `fabricatedEvidence` cannot detect on its own: K1 and K3 each cited real `history` data but drew a partly unsupported conclusion from it, with `fabricatedEvidence=false` in both cases.
-
-Baseline v5 is a static repository file - `evaluate-v5.js`/`regression-v5.js` only ever read it, never write or regenerate it, verified by mutation tests that load the real on-disk baseline independently of a deliberately-mutated in-memory dataset copy. It honestly freezes K1's and K3's known weaknesses (`evidence=partial`, `inferenceQuality=partial`; K3 additionally `modelShouldCreateBugCorrect=false`) rather than normalizing them to `pass` - the baseline records accepted observed state, not an aspirational one. All 15 dimensions follow the same `fail < partial < pass` ordering (`not_applicable`/`null` outside that ordering, never silently coerced) and the same "any regression anywhere wins" precedence already used since Roadmap #12.
-
-`npm run eval:ai:v5` / `npm run eval:regression:v5` are fully offline, and - since Roadmap #16E.5 - the `QA Agent evaluation` CI job now explicitly runs all five evaluation/regression pairs (`v1` through `v5`), closing the CI coverage gap `v3`/`v4` had also carried since their own implementation.
-
-**Final Evidence Lock Decision (Roadmap #16E, finalized): FINALIZE WITHOUT REPEATS.** An independent review had identified two optional strengthening repeats (R1 - a differently-shaped K1 repeat; R2 - a differently-shaped K3 repeat) that *could* corroborate the two `partial`-dimension findings (K1's `evidence`, K3's `evidence`/`modelShouldCreateBugCorrect`) before they're treated as durable. A dedicated decision review concluded these repeats are not required to lock Dataset v5/Baseline v5: K1 and K3's `partial`/`fail` findings are recorded honestly as known weaknesses, not smoothed over as passes, so there is nothing an unrun repeat is silently covering up; and K3's specific policy-safety claim (raw model recommending `shouldCreateBug=true` for a `TEST_BUG`, correctly overridden by `agent-policy.js`) already has independent corroboration from the pre-existing `experiment-47` sample (Dataset v4), which shows the identical raw-vs-final divergence pattern. R1/R2 remain available as future, purely additive work (via the existing `metadata.revalidationOfExperiment` provenance field) if a stronger evidentiary basis is ever wanted - they are not blocking, and their absence is not a defect.
+**Final Evidence Lock Decision:** an independent review identified two optional strengthening repeats (R1/R2) that could corroborate K1/K3's `partial`-dimension findings. The decision was to **finalize without running them**: the `partial`/`fail` findings are recorded honestly as known weaknesses (not smoothed to `pass`), and K3's specific policy-safety claim already has independent corroboration from the pre-existing `experiment-47` sample. R1/R2 remain available as future, purely additive work if ever wanted.
 
 ### Curated External Knowledge (Roadmap #17)
 
-**Status: COMPLETE, MERGED.** Adds the first `CURATED_EXTERNAL` knowledge units - statically curated, source-verified summaries of authoritative external documentation, not project-derived and not fetched at runtime. `CURATED_EXTERNAL` existed in the schema since Roadmap #15 but had zero units until this phase. Three candidates were researched against primary/authoritative sources only (official Cypress docs, official GitHub Actions docs, MDN); **two were accepted, one was rejected** - accuracy took priority over reaching a target corpus size, per this roadmap item's own explicit constraint.
-
-Accepted:
-
-- `framework-cypress-command-retry-ability-scope` (`FRAMEWORK`) - the queries/assertions surrounding a command retry automatically, but the command itself (e.g. `.click()`/`.type()`) executes only once after built-in actionability checks pass; sourced from [Cypress's Retry-ability documentation](https://docs.cypress.io/app/core-concepts/retry-ability) for that distinction, plus [Cypress's Error Messages reference](https://docs.cypress.io/app/references/error-messages) for the literal actionability-error phrase the unit is tagged on (`"cannot be interacted with"`) - neither page alone covers the full statement, so both are recorded in `source`. Tagged on that specific phrase, not on generic terms like `retry`/`timeout`/`cypress` already used by the pre-existing `framework-cypress-retry-timeout-semantics` unit, so it activates only for genuine actionability failures, not every timeout.
-- `ci-job-isolation-runner-state` (`CI`) - the corpus's first unit in a previously-empty category - scoped explicitly to GitHub-hosted runners: each such job runs on its own new, GitHub-provisioned VM (with a documented exception for single-CPU runners, which share a VM - the statement discloses this rather than universalizing past it), so state doesn't automatically carry to another job; artifacts are the separate, explicit mechanism for passing data across that boundary; self-hosted runners are out of scope, since their lifecycle/persistence is owner-configured, not freshly provisioned by GitHub. Sourced from three official GitHub Docs pages - [About GitHub-hosted runners](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) (fresh-VM/single-CPU-exception), [Store and share data with workflow artifacts](https://docs.github.com/en/actions/using-workflows/storing-workflow-data-as-artifacts) (artifacts), and [Self-hosted runners reference](https://docs.github.com/en/actions/reference/runners/self-hosted-runners) (self-hosted lifecycle) - all three recorded in `source`, since no single page covers every clause. Tagged on `job isolation`/`fresh runner`, not the bare word `runner` - `KNOWN_PROJECT_CONSTRAINTS` already always contains the words "GitHub Actions runner" (from the pre-existing Firefox execution-environment constraint), so a bare `runner` tag would have fired on every single failure regardless of relevance, repeating the exact defect class Roadmap #16D.1 fixed.
-
-Rejected: `cross-browser-engine-differences-caution` - no primary/authoritative source was found supporting a sufficiently narrow, non-folklore, generalizable, triage-useful statement; the only concrete authoritative fact located (`requestAnimationFrame`'s refresh-rate/overflow behavior on MDN) was real but too narrow and tangential to this project's actual Cypress failure modes to justify a unit. Not added, not documented elsewhere as implemented.
-
-The production corpus is now **6 units** (4 `CURATED_INTERNAL`/`PROJECT_VERIFIED` from Roadmap #15/#16D.1, 2 `CURATED_EXTERNAL` from this phase). Both new units carry `priority: 4`, deliberately below every existing `CURATED_INTERNAL` (5, 8) and the `PROJECT_VERIFIED` unit (10) - external authority does not outrank project-specific or internally-curated guidance in selector tie-breaks. Both were collision-checked with the real production selector against K1/K3/K4/K5-shaped contexts: none of the four existing frozen selections changed, and K5's true-zero-knowledge context still selects exactly `[]`. Dataset v5/Baseline v5 remain byte-for-byte unmodified and all `v1`-`v5` evaluations remain `UNCHANGED` - Dataset v5's knowledge scoring compares recorded (frozen) `actualSelectedUnitIds` values captured at live-experiment time, never re-invokes the real selector/corpus, so corpus growth structurally cannot affect it. Knowledge remains **guidance only, never current-run evidence**: both new units reach the model exactly like every existing one, as a bare `{id, statement}` pair - `sourceType`/`source`/`verifiedAt`/`priority`/`tags` are never transmitted - so no new live-model validation was required; the existing K1/K3/K4 live evidence for the shared guidance-only transport contract already covers this. No production code (`selector.js`/`loader.js`/`schema.js`/`qa-agent-prompt.js`/`analyze-failure.js`/`agent-policy.js`) was modified, and no runtime network call of any kind was introduced - source URLs are stored as plain text only.
+**Status: complete, merged.** Added the first `CURATED_EXTERNAL` knowledge units - statically curated, source-verified summaries of authoritative external documentation. Three candidates were researched against primary sources only; two were accepted (`framework-cypress-command-retry-ability-scope`, sourced from official Cypress docs; `ci-job-isolation-runner-state`, sourced from three official GitHub Docs pages), one was rejected for insufficient source support - accuracy took priority over corpus size. Production corpus: 6 units total, 2 `CURATED_EXTERNAL`.
 
 ### Provider / Model Abstraction (Roadmap #18)
 
-**Status: COMPLETE WITH DOCUMENTED LIMITATIONS.** Proves the existing provider abstraction (Roadmap #18.1's audit found it already provider-neutral, a legacy of an earlier undocumented GitHub Models → provider-neutral → Groq migration) generalizes to a second, structurally different real vendor, and adds transport-level observability.
+**Status: complete with documented limitations.** Proved the pre-existing provider abstraction generalizes to a second, structurally different real vendor and added transport-level observability - fully summarized under [Provider abstraction](#provider-abstraction) above. `GroqProvider` and `GeminiProvider` are both direct HTTP implementations (no vendor SDK), so retry ownership stays entirely inside this project's own retry loop rather than an SDK's internal behavior, and both map their failures onto the same shared `ProviderError` vocabulary.
 
-**Provider contract**, unchanged from what Groq already implemented:
+### Roadmap #19.1 — Project / Framework Portability Audit
 
-```js
-provider.analyze({ systemPrompt, userPrompt }) → Promise<string>
-```
+**Status: complete (read-only).** A source-verified architecture audit classifying every meaningful component's coupling to the current project (Targomo) and framework (Cypress), producing the [Current Portability Status](#current-portability-status) and [Known Architectural Boundaries](#known-architectural-boundaries) sections above, plus the target architecture and Phase A/Phase B plan under [Roadmap #19](#roadmap-19--project--framework-portability). No production code, tests, workflow, or dataset/baseline files were changed by this audit.
 
-**Transport distinctiveness, by design.** `GroqProvider` calls Groq's OpenAI-compatible Chat Completions API (`POST /openai/v1/chat/completions`, `Authorization: Bearer` header, `messages: [{role, content}]`). `GeminiProvider` calls Google's native `generateContent` REST API (`POST /v1beta/models/{model}:generateContent`, `x-goog-api-key` header, a `systemInstruction`/`contents` request shape, and multi-part response text joined with empty-string concatenation - the only lossless strategy for Gemini's part-array envelope). Both are implemented as direct HTTP calls over `fetch`, not through an official vendor SDK, so retry ownership stays entirely inside this project's own `runProviderAnalysis()` rather than an SDK's own internal retry behavior. Both map their HTTP/network failures onto the exact same shared, provider-neutral `ProviderError` vocabulary (`AUTH`/`RATE_LIMIT`/`TIMEOUT`/`NETWORK`/`INVALID_RESPONSE`/`CONFIGURATION`/`UNKNOWN`) - `analyze-failure.js` cannot tell which vendor it's talking to from the error shape alone.
-
-**Provider provenance (Roadmap #18.3).** Every analysis now records `analysis.providerAttempts` (the 1-based attempt count `runProviderAnalysis()` reached) and `analysis.firstAttemptError` (a safe summary of the *first* attempt's failure, if any, distinct from whatever ultimately succeeded or failed on the last attempt) in `ai-report.json`. Persisted error messages are never a provider's raw error/SDK text - `summarizeProviderError()` looks the message up from a fixed, pre-approved `SAFE_PROVIDER_ERROR_MESSAGES` allowlist keyed only by the generic error code, so a future provider's verbose exception text (which could embed request/response detail) can never reach a committed artifact.
-
-**Three distinct retry-adjacent concepts, kept separate on purpose:** (1) `runProviderAnalysis()`'s own bounded transport retry (up to 3 attempts, `retryable`-gated) happens *inside* one logical analysis - it is not a second AI call; (2) a QA result's own `shouldRetry` field is the model's *recommendation* about whether the Cypress test itself should be re-run, unrelated to provider transport; (3) malformed-JSON model output is a validation failure, not a transport failure, and is **not** retried by `runProviderAnalysis()`.
-
-**Gemini validation status - what is and is not established.** A single controlled live Gemini API call (Roadmap #18.9) is reported to have exercised the real endpoint end-to-end and returned a well-formed result: `classification: TEST_BUG`, `analysis.providerAttempts: 1`, `analysis.firstAttemptError: null`, and - after the application policy layer ran (see [Application action policy](#application-action-policy) above for these exact field names) - `policy.originalShouldCreateBug: false`, final `shouldCreateBug: false`, `policy.adjusted: false`. This is a real-API-compatibility signal, not a weaker result than Groq's own occasional policy-adjusted cases - it demonstrates the adapter's request/response handling works against the live API on a clean run. It does **not**, on its own, establish production-grade reliability: this was one observation, left no CI/repository trace by design (the same disposable-experiment pattern used throughout this project's controlled validations), and was not independently re-run as part of this review. **"Real API compatibility proven" (yes) is explicitly distinct from "production validation proven" (no).** Gemini has never been exercised by CI, has no repository secret, has no availability/SLO/cost/rate-limit history, and has not been evaluated for privacy/compliance fit - all deferred, open questions for Roadmap #20, not claims this phase makes.
-
-Config (no real keys - see [Local development](#qa-agent-ai-failure-analysis) above for the full example blocks):
-
-```
-AI_PROVIDER=groq    AI_MODEL=openai/gpt-oss-120b     AI_API_KEY=<groq key>
-AI_PROVIDER=gemini  AI_MODEL=gemini-3.6-flash        AI_API_KEY=<gemini key>
-```
-
-**Verified at Roadmap #18 completion:** 918 unit tests passing (0 failing), including 93 provider-layer tests broken out as 27 Gemini / 17 Groq / 14 Mock / remainder shared contract-and-factory tests; Dataset/Baseline v1-v5 and all `eval:*`/`eval:regression:*` results unchanged by this roadmap item - provider work is orthogonal to evaluation content. No production prompt, policy, knowledge, Cypress, or CI workflow file was modified by this roadmap item beyond what is documented above.
-
-### Roadmap
+### Roadmap summary
 
 | Roadmap item | Status |
 |---|---|
@@ -533,53 +622,10 @@ AI_PROVIDER=gemini  AI_MODEL=gemini-3.6-flash        AI_API_KEY=<gemini key>
 | #16 (incl. #16B-#16E.5) - Production knowledge integration, live validation, Dataset v5 | COMPLETE |
 | #17 - Curated external knowledge | COMPLETE |
 | #18 - Provider / model abstraction (Gemini) | COMPLETE WITH DOCUMENTED LIMITATIONS |
-| #19 - Project / framework portability | NEXT |
-| #20 - Production hardening (reliability, cost, secret governance) | PLANNED |
+| #19.1 - Project/framework portability audit | COMPLETE |
+| #19.2+ - Project/framework portability implementation | NOT STARTED |
+| #20 - Data security & governance | PLANNED |
 
-**Done:**
+**Next:** Roadmap #19.2 - the first small implementation stage of [Phase A (project portability)](#roadmap-19--project--framework-portability) above (explicit project identity, no behavior change to current Targomo+Cypress output expected).
 
-- Centralized, single-call-per-run QA AI triage
-- Application-level `shouldCreateBug` safeguard (LLM recommends, application decides)
-- Controlled experiments #2-#5 against the real Groq provider
-- Evaluation Dataset v1 (frozen historical ground truth + actual outputs)
-- Deterministic offline evaluation runner
-- Baseline v1 + per-sample regression comparator
-- Informational `QA Agent evaluation` CI check
-- Multi-browser correlation context - deterministic cross-browser evidence fed into the single AI call, without increasing AI call count
-- Controlled Multi-Browser Correlation Experiment, Scenario A (same signature) and Scenario B (different signatures) - real, Groq-backed CI runs (PR #35, #36) proving correlation construction/transport work correctly and are safe (no unsupported cross-browser inferences), both closed without merge after data collection
-- Evaluation Dataset v2 / Baseline v2 (Roadmap #6) - a separate, additive dataset (Dataset v1's four samples + Scenario A/B) that makes correlation quality measurable and regression-testable, frozen as the baseline *before* any prompt change
-- Informational Dataset v2 CI rollout (Roadmap #7) - the `QA Agent evaluation` job now also runs `eval:ai:v2`/`eval:regression:v2` alongside the v1 commands, fully offline, no new secrets/provider/Cypress dependency, still non-required in branch protection
-- Correlation reasoning prompt contract improvement, Phase 1 (Roadmap #8) - see [above](#correlation-reasoning-prompt-improvement-roadmap-8); a prompt-only change, not yet behaviorally validated against a live model
-- Evidence Grounding Evaluation Protection (Roadmap #9) - see [above](#evidence-grounding-evaluation-protection-roadmap-9); activates the existing `fabricatedEvidence` signal in v1/v2 scoring and regression, evaluation-only, no production behavior change
-- Evidence Grounding Dataset Expansion (Roadmap #10) - see [above](#evidence-grounding-dataset-expansion-roadmap-10); additive Dataset v3/Baseline v3 (Dataset v2's six samples + the grounding sample), `fabricatedEvidence = true` frozen as a known deficiency; `eval:ai:v3`/`eval:regression:v3` now run explicitly in `QA Agent evaluation` CI (Roadmap #16E.5)
-- Evidence Grounding Prompt Improvement, Phase 1 (Roadmap #11) - see [above](#evidence-grounding-prompt-improvement-roadmap-11); status: **implemented / ready for live validation** - a minimal, generic claim-level grounding contract (observed fact / supported inference / unknown-not-established), not yet behaviorally validated against a live model
-- Qualitative Regression Protection (Roadmap #12) - see [above](#qualitative-regression-protection-roadmap-12); `rootCause`/`evidence`/`recommendedFix` are now per-sample regression-protected in Baseline v1/v2/v3, using the same `fail < partial < pass` ordering as correlation quality, evaluation-only, no production behavior change
-- Additive Post-Prompt Evaluation Dataset v4 (Roadmap #13) - see [above](#additive-post-prompt-evaluation-dataset-v4-roadmap-13); status: **implemented / ready for review** - two independent post-prompt controlled re-validations of Experiment #41 stored as separate samples alongside the unmodified pre-prompt historical record; `eval:ai:v4`/`eval:regression:v4` now run explicitly in `QA Agent evaluation` CI (Roadmap #16E.5)
-- Browser Matrix Expansion - Firefox (Roadmap #14) - see [Continuous Integration](#continuous-integration) and [QA Agent](#qa-agent-ai-failure-analysis) above; status: **implemented locally / pending CI validation** - a dedicated `Cypress - firefox` job runs the existing, unmodified E2E suite on the bare `ubuntu-latest` runner (Roadmap #14B's proven execution strategy), feeds the same centralized aggregator/triage/single-AI-call pipeline as Chrome/Edge, and is deliberately not yet a required branch-protection check; historical Dataset v1-v4/Baseline v1-v4 are unmodified, since this is production execution coverage, not evaluation recuration
-- QA Knowledge / Skills Layer Foundation (Roadmap #15) - see [above](#qa-knowledge--skills-layer-foundation-roadmap-15); status: **implemented / ready for review** - atomic, schema-validated knowledge units (`scripts/ai/knowledge/`), a loader, and a deterministic, zero-provider-call offline selector, plus 4 curated initial units; knowledge is guidance only and cannot override evidence/browserCorrelation/history/policy; production prompt wiring is deliberately absent, no external knowledge exists yet, Dataset/Baseline v1-v4 unmodified
-- Production Knowledge Integration (Roadmap #16) - see [above](#production-knowledge-integration-roadmap-16); status: **implemented / ready for review** - `relevantKnowledge` is now selected deterministically/offline and passed into the real production prompt under a new rule 12 guidance-only authority contract; two overly-broad curated tags were corrected (Roadmap #16B/#16B.1) so timeout/retry guidance no longer fires on unrelated failures; the exact knowledge a given analysis received is now persisted in `ai-report.json`'s `sourceContext.relevantKnowledge` for reproducibility; single-call architecture and all evidence/correlation/history/policy authority boundaries are preserved; no external knowledge, no Dataset v5/Baseline v5, and no live-model validation of knowledge-assisted behavior yet
-- Controlled Live Knowledge Validation (Roadmap #16D) - see [above](#controlled-live-knowledge-validation-roadmap-16d); status: **first evidence series complete** - five controlled, live Groq-backed observations (K1/K2/K3/K4/K5) validating knowledge-authority invariants end-to-end, each a disposable branch/PR closed without merge; zero production/knowledge/selector/prompt/policy/workflow files modified; two optional strengthening repeats (R1/R2) identified but not run
-- Dataset v5 / Baseline v5 (Roadmap #16E) - see [above](#dataset-v5--baseline-v5-roadmap-16e); status: **merged, evidence lock finalized** - additive Dataset v5 (Dataset v4's 9 samples + K1/K3/K4/K5, 13 scorable), K2 preserved as a structurally separate, non-scorable historical observation, 15 protected regression dimensions (10 inherited + `knowledgeSelectionCorrect`/`knowledgeUsage`/`knowledgeGrounding`/`modelShouldCreateBugCorrect`/`inferenceQuality`), Baseline v5 static and honestly frozen (K1/K3 known weaknesses preserved, not normalized to pass); `eval:ai:v5`/`eval:regression:v5` now run explicitly in `QA Agent evaluation` CI (Roadmap #16E.5); final decision was to finalize without running the two optional R1/R2 strengthening repeats - see [above](#dataset-v5--baseline-v5-roadmap-16e) for why
-- Explicit QA Agent evaluation CI rollout, v1-v5 (Roadmap #16E.5) - the `QA Agent evaluation` job previously ran only `v1`/`v2` explicitly, the same pre-existing gap `v3`/`v4` had also carried since their own implementation; it now explicitly runs all five evaluation/regression pairs (`eval:ai`/`eval:regression` through `eval:ai:v5`/`eval:regression:v5`) as ten sequential, non-`continue-on-error` steps in the same job - a regression on any version now fails the job's exit code the same way a regression on v1/v2 already did. Workflow-only change: no evaluation semantics, dataset/baseline content, production AI behavior, or Cypress code modified; job name, triggers, permissions, and branch-protection requirements are unchanged, and `QA Agent evaluation` remains non-required
-- Curated External Knowledge (Roadmap #17) - see [above](#curated-external-knowledge-roadmap-17); status: **complete, merged** - 2 of 3 researched candidates accepted after primary-source verification (`framework-cypress-command-retry-ability-scope`, `ci-job-isolation-runner-state`), 1 rejected for insufficient source support (`cross-browser-engine-differences-caution`); production corpus now 6 units (2 `CURATED_EXTERNAL`); collision-checked clean against K1/K3/K4/K5 with the real selector, K5 still selects `[]`; Dataset v5/Baseline v5 and all v1-v5 evaluations unchanged; no production code, prompt, workflow, or Cypress files modified; no runtime network calls; no live AI experiment required or run
-- Provider / Model Abstraction (Roadmap #18) - see [above](#provider--model-abstraction-roadmap-18); status: **complete with documented limitations** - proved the pre-existing provider abstraction generalizes to a second, structurally different real vendor (`GeminiProvider`, native `generateContent` REST API, no SDK); added provider provenance (`providerAttempts`/`firstAttemptError`) with a fixed, provider-neutral safe-message allowlist so no raw provider/SDK text is ever persisted; real-API compatibility is demonstrated by one reported live call, but production reliability, availability, cost, and secret governance for Gemini remain open, deferred to Roadmap #20; Gemini is not wired into CI and has no repository secret; 918 unit tests passing (93 provider tests: 27 Gemini / 17 Groq / 14 Mock / shared contract-and-factory), Dataset/Baseline v1-v5 unchanged
-
-**Next:**
-
-- Project / Framework Portability (Roadmap #19)
-
-**Planned / future work** (not implemented yet):
-
-- Controlled Correlation Re-validation (Roadmap #8, Phases 2-3) - reproduce a same-signature and a different-signature multi-browser failure against the improved prompt with real Groq calls, compare against the historical Baseline v2 findings, and only then update Dataset v2/Baseline v2 with real evidence (target: move `correlationReasoning` from `partial` to `pass` on Scenario A/B without regressing classification/action safety anywhere else) - still outstanding, not superseded by Roadmap #13
-- Cross-run failure fingerprinting (this PR's correlation is scoped to a single workflow run only)
-- Portability / reusable QA Agent architecture (Roadmap #19, next) - extracting the QA Agent into a package/workflow other test-automation repositories (not just Targomo) can adopt
-- Playwright adapter/integration
-- API testing integration
-- Database/data-layer testing integration
-- Performance/load testing integration
-- Confidence-based policy refinements
-- Structured provider output-schema improvements
-- Human-approved action flow / automatic GitHub Issue creation from `shouldCreateBug`
-- Fallback provider (automatic multi-provider execution) - explicitly not implemented; today's provider selection is single, static, and manual (Roadmap #18)
-- Human feedback loop into evaluation
-- Production hardening for real providers (Roadmap #20, planned) - CI-wiring a second provider, reliability/availability/SLO observation over time, cost and secret governance, privacy/compliance review - none of this is established for Gemini yet (see [Provider / Model Abstraction](#provider--model-abstraction-roadmap-18) above)
+**Planned / future work** (not implemented yet): Controlled Correlation Re-validation (Roadmap #8, Phases 2-3, still outstanding); cross-run failure fingerprinting (correlation is currently scoped to a single workflow run only); API/database/performance testing integration; confidence-based policy refinements; structured provider output-schema improvements; human-approved action flow / automatic GitHub Issue creation from `shouldCreateBug`; automatic multi-provider fallback (explicitly not implemented - today's provider selection is single, static, and manual); human feedback loop into evaluation; Roadmap #20's full security/governance scope.
