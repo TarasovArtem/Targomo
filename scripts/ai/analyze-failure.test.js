@@ -930,17 +930,17 @@ test("Roadmap #16C 7: existing sourceContext fields (browserCorrelation, browser
 test("Roadmap #19.2: sourceContext.projectId equals the production project id when context.metadata carries it", async () => {
   const provider = providerReturning([goodItem()]);
   const report = await buildFailureReport(
-    { ...context, metadata: { ...context.metadata, projectId: "targomo-poi" } },
+    { ...context, metadata: { ...context.metadata, projectId: "external-poi-sut" } },
     { provider, history: null, relevantKnowledge: [] }
   );
 
-  assert.equal(report.sourceContext.projectId, "targomo-poi");
+  assert.equal(report.sourceContext.projectId, "external-poi-sut");
 });
 
 test("Roadmap #19.2: projectId is additive only - provider provenance and policy field shape are unchanged", async () => {
   const provider = providerReturning([goodItem({ shouldCreateBug: true })]);
   const report = await buildFailureReport(
-    { ...context, metadata: { ...context.metadata, projectId: "targomo-poi" } },
+    { ...context, metadata: { ...context.metadata, projectId: "external-poi-sut" } },
     { provider, history: null, relevantKnowledge: [] }
   );
 

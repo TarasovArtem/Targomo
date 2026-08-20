@@ -63,9 +63,13 @@ function validateProjectProfile(profile) {
 
 // The single production project. `id` is the canonical, stable,
 // machine-readable project identity referenced elsewhere as
-// "targomo-poi" (context.metadata.projectId, ai-report.json's
+// "external-poi-sut" (context.metadata.projectId, ai-report.json's
 // sourceContext.projectId) - this object is the only place that literal
-// is defined; everything else imports it from here.
+// is defined; everything else imports it from here. `id` identifies the
+// logical external POI SUT project itself, not any single point-in-time
+// attribute of it - it is not a hostname, a vendor/brand name, or a test
+// framework, and should not be renamed merely because `displayName`,
+// `baseUrl`, the external vendor, or the test framework changes.
 //
 // `displayName` fills the exact clause the system prompt's persona
 // sentence previously hardcoded (see qa-agent-prompt.js) - kept
@@ -76,7 +80,7 @@ function validateProjectProfile(profile) {
 // collect-context.js's former KNOWN_PROJECT_CONSTRAINTS array - same
 // text, same order, no rewrite.
 const TARGOMO_PROJECT_PROFILE = Object.freeze({
-  id: "targomo-poi",
+  id: "external-poi-sut",
   displayName: "a live, externally hosted third-party application (poi.targomo.com)",
   // Frozen (see below) - collect-context.js assigns this exact array
   // reference into context.knownProjectConstraints (no defensive copy),
