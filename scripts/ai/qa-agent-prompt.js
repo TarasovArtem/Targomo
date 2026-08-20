@@ -105,9 +105,39 @@ ${JSON.stringify({ results: [EXAMPLE_RESULT_ITEM] }, null, 2)}
 "results" must be an array with exactly one item per failed test, in the order they were given. "recommendedFix" must be null when you cannot propose a concrete fix. Every field shown above is required on every item.`;
 }
 
+// Explicit allowlist of context.metadata fields the LLM is actually told
+// it may reason about (see rule 5 above: "which browser ran it, whether
+// it ran in CI, ... all provided run metadata (commit/branch/CI/event)").
+// A positive allowlist, not a denylist: any metadata field not named here
+// - including today's `projectId`/`repository`/`runId` and any field
+// added to collect-context.js's getMetadata() in the future - is excluded
+// by default, never forwarded just because it exists on context.metadata.
+// `projectId` (Roadmap #19.2's internal, stable project namespace) is
+// deliberately never in this list - it is an eligibility/trust/provenance
+// signal (see scripts/ai/knowledge/selector.js, analyze-failure.js's
+// readHistory()/pickSourceContext()), not something the model was ever
+// instructed to reason about, and must never reach the prompt regardless
+// of which project produced the context.
+const PROMPT_METADATA_ALLOWLIST = ["browser", "ci", "commit", "branch", "event"];
+
+function pickPromptMetadata(metadata) {
+  const m = metadata || {};
+  const picked = {};
+  for (const key of PROMPT_METADATA_ALLOWLIST) {
+    // Own-property only: an allowlisted key must be genuinely, explicitly
+    // supplied on this object, never merely reachable through its
+    // prototype chain - the real collector (collect-context.js) always
+    // emits a plain object literal, but this keeps the allowlist's
+    // "explicitly supplied" guarantee true regardless of what shape a
+    // future caller passes in.
+    if (Object.prototype.hasOwnProperty.call(m, key) && m[key] !== undefined) picked[key] = m[key];
+  }
+  return picked;
+}
+
 function buildUserPrompt(context) {
   const payload = {
-    metadata: context.metadata || {},
+    metadata: pickPromptMetadata(context.metadata),
     testResults: context.testResults || {},
     failedTests: context.failedTests || [],
     relevantFiles: context.relevantFiles || {},
@@ -151,4 +181,5 @@ module.exports = {
   CLASSIFICATIONS,
   buildSystemPrompt,
   buildUserPrompt,
+  pickPromptMetadata,
 };

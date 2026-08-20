@@ -2,7 +2,7 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { CLASSIFICATIONS, buildSystemPrompt, buildUserPrompt } = require("./qa-agent-prompt");
+const { CLASSIFICATIONS, buildSystemPrompt, buildUserPrompt, pickPromptMetadata } = require("./qa-agent-prompt");
 const { TARGOMO_PROJECT_PROFILE } = require("./project-profile");
 
 // Roadmap #19.2 - project-identity parameterization proof. A unit
@@ -603,4 +603,112 @@ test("CASE 6 - knowledge vs browserCorrelation: knowledge cannot override a dete
   // array cannot mutate it, since they are disjoint fields on the payload.
   assert.equal(payload.browserCorrelation.sameFailureSignature, true);
   assert.match(rule12Section(), /relevantKnowledge can never override any of them/i);
+});
+
+// --- Roadmap #19.4P: prompt metadata boundary hardening -------------------
+// Pre-existing finding (discovered during the #19.4 architecture audit,
+// not introduced by #19.3): buildUserPrompt() used to forward
+// context.metadata wholesale, so Roadmap #19.2's metadata.projectId (the
+// internal, stable project namespace id) reached the LLM-visible prompt
+// alongside genuinely operational fields. This section proves the fix is
+// an explicit positive allowlist, not a projectId-shaped denylist: any
+// metadata field not in PROMPT_METADATA_ALLOWLIST is excluded by default,
+// including ones that don't exist yet.
+
+function parsePromptPayload(prompt) {
+  return JSON.parse(prompt.slice(prompt.indexOf("{"), prompt.lastIndexOf("}") + 1));
+}
+
+const REALISTIC_METADATA = {
+  projectId: "external-poi-sut",
+  repository: "TarasovArtem/qa-ai-agent",
+  commit: "abc123",
+  branch: "main",
+  runId: "42",
+  event: "push",
+  browser: "firefox",
+  ci: true,
+};
+
+test("pickPromptMetadata: excludes projectId - the internal project namespace must never reach the LLM", () => {
+  const picked = pickPromptMetadata(REALISTIC_METADATA);
+  assert.equal(picked.projectId, undefined);
+  assert.equal(Object.prototype.hasOwnProperty.call(picked, "projectId"), false);
+});
+
+test("buildUserPrompt: the production project id is absent from the rendered prompt - primary regression guard", () => {
+  const context = { metadata: REALISTIC_METADATA, testResults: {}, failedTests: [], relevantFiles: {} };
+  const prompt = buildUserPrompt(context);
+  assert.equal(prompt.includes('"projectId"'), false);
+  assert.equal(prompt.includes("external-poi-sut"), false);
+});
+
+test("buildUserPrompt: a synthetic second project's id is equally absent from the rendered prompt - the invariant Roadmap #19.4 will rely on", () => {
+  const context = {
+    metadata: { ...REALISTIC_METADATA, projectId: "synthetic-project" },
+    testResults: {},
+    failedTests: [],
+    relevantFiles: {},
+  };
+  const prompt = buildUserPrompt(context);
+  assert.equal(prompt.includes('"projectId"'), false);
+  assert.equal(prompt.includes("synthetic-project"), false);
+});
+
+test("buildUserPrompt: an unknown future metadata field is excluded by default - proves an allowlist, not a projectId-only denylist", () => {
+  const context = {
+    metadata: { ...REALISTIC_METADATA, INTERNAL_FUTURE_METADATA_SENTINEL: "SHOULD_NEVER_REACH_LLM" },
+    testResults: {},
+    failedTests: [],
+    relevantFiles: {},
+  };
+  const prompt = buildUserPrompt(context);
+  assert.equal(prompt.includes("INTERNAL_FUTURE_METADATA_SENTINEL"), false);
+  assert.equal(prompt.includes("SHOULD_NEVER_REACH_LLM"), false);
+});
+
+test("buildUserPrompt: repository and runId are excluded too - not because they're sensitive, but because no current prompt rule uses them", () => {
+  const context = { metadata: REALISTIC_METADATA, testResults: {}, failedTests: [], relevantFiles: {} };
+  const payload = parsePromptPayload(buildUserPrompt(context));
+  assert.equal(Object.prototype.hasOwnProperty.call(payload.metadata, "repository"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(payload.metadata, "runId"), false);
+});
+
+test("buildUserPrompt: every genuinely operational metadata field named by rule 5 (browser, CI, commit, branch, event) is preserved", () => {
+  const context = { metadata: REALISTIC_METADATA, testResults: {}, failedTests: [], relevantFiles: {} };
+  const payload = parsePromptPayload(buildUserPrompt(context));
+  assert.deepEqual(payload.metadata, {
+    browser: "firefox",
+    ci: true,
+    commit: "abc123",
+    branch: "main",
+    event: "push",
+  });
+});
+
+test("buildUserPrompt: absent context.metadata still renders a valid, empty metadata object - no crash", () => {
+  const prompt = buildUserPrompt({ testResults: {}, failedTests: [], relevantFiles: {} });
+  const payload = parsePromptPayload(prompt);
+  assert.deepEqual(payload.metadata, {});
+});
+
+test("buildUserPrompt: context.metadata = null still renders a valid, empty metadata object - no crash", () => {
+  const prompt = buildUserPrompt({ metadata: null, testResults: {}, failedTests: [], relevantFiles: {} });
+  const payload = parsePromptPayload(prompt);
+  assert.deepEqual(payload.metadata, {});
+});
+
+test("pickPromptMetadata: missing/null input returns a plain empty object rather than throwing", () => {
+  assert.deepEqual(pickPromptMetadata(undefined), {});
+  assert.deepEqual(pickPromptMetadata(null), {});
+});
+
+test("pickPromptMetadata: only copies own properties - an allowlisted key reachable only through the prototype chain is not 'explicitly supplied' and must not leak in", () => {
+  function Proto() {}
+  Proto.prototype.browser = "INHERITED_BROWSER_SHOULD_NOT_APPEAR";
+  Proto.prototype.ci = true;
+  const metadata = Object.create(Proto.prototype);
+  metadata.commit = "OWN_COMMIT_VALUE";
+
+  assert.deepEqual(pickPromptMetadata(metadata), { commit: "OWN_COMMIT_VALUE" });
 });
