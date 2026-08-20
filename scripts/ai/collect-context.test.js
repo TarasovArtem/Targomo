@@ -15,8 +15,8 @@ const {
   buildRelevantFiles,
   getMetadata,
   truncateText,
-  KNOWN_PROJECT_CONSTRAINTS,
 } = require("./collect-context");
+const { TARGOMO_PROJECT_PROFILE } = require("./project-profile");
 
 const ROOT = path.resolve(__dirname, "..", "..");
 
@@ -213,6 +213,11 @@ test("getMetadata: TEST_BROWSER takes priority over BROWSER/CYPRESS_BROWSER", (t
   assert.equal(meta.ci, true);
 });
 
+test("getMetadata: projectId is the stable production project identity (Roadmap #19.2)", () => {
+  assert.equal(getMetadata().projectId, "targomo-poi");
+  assert.equal(getMetadata().projectId, TARGOMO_PROJECT_PROFILE.id);
+});
+
 test("truncateText: leaves short text untouched", () => {
   assert.equal(truncateText("short", 100), "short");
 });
@@ -255,8 +260,14 @@ test("extractFailedTests: truncates a very long stack trace but never the error 
   assert.match(failed.error.stack, /truncated/);
 });
 
-test("KNOWN_PROJECT_CONSTRAINTS: is a non-empty list of plain strings (no secrets/tokens)", () => {
-  assert.ok(Array.isArray(KNOWN_PROJECT_CONSTRAINTS));
-  assert.ok(KNOWN_PROJECT_CONSTRAINTS.length > 0);
-  KNOWN_PROJECT_CONSTRAINTS.forEach((entry) => assert.equal(typeof entry, "string"));
+// Roadmap #19.2: collect-context.js no longer defines its own
+// KNOWN_PROJECT_CONSTRAINTS array - project facts are now owned by
+// scripts/ai/project-profile.js (see project-profile.test.js for
+// that module's own shape/content tests) and only consumed here. This
+// test proves the ownership transfer: collect-context.js's own module
+// exports contain no such array, so there is no duplicate, drifting copy
+// of project-constraint text anywhere in this file.
+test("collect-context.js no longer exports its own KNOWN_PROJECT_CONSTRAINTS (ownership moved to ProjectProfile, Roadmap #19.2)", () => {
+  const exportsFromModule = require("./collect-context");
+  assert.equal("KNOWN_PROJECT_CONSTRAINTS" in exportsFromModule, false);
 });

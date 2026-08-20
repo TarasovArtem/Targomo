@@ -108,6 +108,13 @@ function computeRelevantKnowledge(context) {
 function pickSourceContext(context) {
   const m = context.metadata || {};
   return {
+    // Stable, machine-readable project identity (Roadmap #19.2) - read
+    // straight off context.metadata.projectId (set by
+    // scripts/ai/collect-context.js from scripts/ai/project-profile.js),
+    // never recomputed or re-derived here. null for a context that
+    // predates this field or wasn't produced by the collector (e.g. a
+    // hand-built test fixture).
+    projectId: m.projectId ?? null,
     repository: m.repository ?? null,
     commit: m.commit ?? null,
     branch: m.branch ?? null,
