@@ -2,11 +2,24 @@
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { aggregateHistory, fetchJson, isRetryableStatus, clampRunsWanted, DEFAULT_RUNS, MAX_RUNS } = require("./collect-history");
+const { aggregateHistory, fetchJson, isRetryableStatus, clampRunsWanted, DEFAULT_RUNS, MAX_RUNS, PROJECT_PROFILE } = require("./collect-history");
+const { TARGOMO_PROJECT_PROFILE } = require("./project-profile");
 
 function run({ id, run_attempt = 1 }) {
   return { id, run_attempt };
 }
+
+// Roadmap #19.3C: the collected History aggregate's projectId (written
+// onto the available:true object inside main(), which is not otherwise
+// unit-testable without mocking the GitHub API/filesystem/env) must come
+// from this exact single source of truth, never a duplicated/hardcoded
+// literal - proving the module reads the real, current stable project
+// identity by reference is the strongest available proof that main()'s
+// `projectId: PROJECT_PROFILE.id` will always reflect it correctly.
+test("PROJECT_PROFILE: collect-history.js sources project identity from the same ProjectProfile as the rest of the AI pipeline, not a duplicated/hardcoded literal", () => {
+  assert.equal(PROJECT_PROFILE, TARGOMO_PROJECT_PROFILE, "must be the exact same object reference, not a copy");
+  assert.equal(PROJECT_PROFILE.id, "external-poi-sut");
+});
 
 test("aggregateHistory: counts passes and failures per browser from job conclusions", async () => {
   const runs = [run({ id: 1 }), run({ id: 2 }), run({ id: 3 }), run({ id: 4 }), run({ id: 5 })];

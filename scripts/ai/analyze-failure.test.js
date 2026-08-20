@@ -12,6 +12,8 @@ const {
   stripCodeFences,
   summarizeProviderError,
   readHistory,
+  classifyProjectId,
+  isHistoryProjectEligible,
   computeRelevantKnowledge,
 } = require("./analyze-failure");
 const { ProviderError, PROVIDER_ERROR_CODES, normalizeProviderError } = require("./providers/provider-error");
@@ -471,6 +473,140 @@ test("readHistory: strips internal bookkeeping fields, keeping only the compact 
   t.after(() => fs.rmSync(path.dirname(HISTORY_FILE), { recursive: true, force: true }));
 
   assert.deepEqual(readHistory(), { runsConsidered: 10, passes: 7, failures: 3, retryPasses: 2 });
+});
+
+// --- Roadmap #19.3C: classifyProjectId() ----------------------------------
+
+test("classifyProjectId: a non-empty (post-trim) string is VALID, value is trimmed", () => {
+  assert.deepEqual(classifyProjectId({ projectId: "external-poi-sut" }, "projectId"), {
+    state: "VALID",
+    value: "external-poi-sut",
+  });
+  assert.deepEqual(classifyProjectId({ projectId: " external-poi-sut " }, "projectId"), {
+    state: "VALID",
+    value: "external-poi-sut",
+  });
+});
+
+test("classifyProjectId: a genuinely missing property is ABSENT, including when the object itself is missing", () => {
+  assert.deepEqual(classifyProjectId({}, "projectId"), { state: "ABSENT", value: null });
+  assert.deepEqual(classifyProjectId(undefined, "projectId"), { state: "ABSENT", value: null });
+  assert.deepEqual(classifyProjectId(null, "projectId"), { state: "ABSENT", value: null });
+});
+
+test("classifyProjectId: null/empty/whitespace-only/non-string values are INVALID, never ABSENT", () => {
+  assert.deepEqual(classifyProjectId({ projectId: null }, "projectId"), { state: "INVALID", value: null });
+  assert.deepEqual(classifyProjectId({ projectId: "" }, "projectId"), { state: "INVALID", value: null });
+  assert.deepEqual(classifyProjectId({ projectId: "   " }, "projectId"), { state: "INVALID", value: null });
+  assert.deepEqual(classifyProjectId({ projectId: 123 }, "projectId"), { state: "INVALID", value: null });
+});
+
+// --- Roadmap #19.3C: isHistoryProjectEligible() ---------------------------
+
+test("isHistoryProjectEligible: full state-combination matrix", () => {
+  const VALID_A = { state: "VALID", value: "external-poi-sut" };
+  const VALID_A_AGAIN = { state: "VALID", value: "external-poi-sut" };
+  const VALID_B = { state: "VALID", value: "synthetic-project" };
+  const ABSENT = { state: "ABSENT", value: null };
+  const INVALID = { state: "INVALID", value: null };
+
+  assert.equal(isHistoryProjectEligible(VALID_A, VALID_A_AGAIN), true, "VALID + same VALID -> true");
+  assert.equal(isHistoryProjectEligible(VALID_A, VALID_B), false, "VALID + different VALID -> false");
+  assert.equal(isHistoryProjectEligible(VALID_A, ABSENT), false, "VALID + ABSENT -> false");
+  assert.equal(isHistoryProjectEligible(VALID_A, INVALID), false, "VALID + INVALID -> false");
+  assert.equal(isHistoryProjectEligible(ABSENT, ABSENT), true, "ABSENT + ABSENT -> true (narrow legacy compatibility)");
+  assert.equal(isHistoryProjectEligible(ABSENT, VALID_A), false, "ABSENT + VALID -> false");
+  assert.equal(isHistoryProjectEligible(ABSENT, INVALID), false, "ABSENT + INVALID -> false");
+  assert.equal(isHistoryProjectEligible(INVALID, ABSENT), false, "INVALID + ABSENT -> false");
+  assert.equal(isHistoryProjectEligible(INVALID, VALID_A), false, "INVALID + VALID -> false");
+  assert.equal(isHistoryProjectEligible(INVALID, INVALID), false, "INVALID + INVALID -> false");
+});
+
+// --- Roadmap #19.3C: readHistory() project-namespace integration ---------
+//
+// These write a real reports/ai/history.json fixture and call the real
+// readHistory(currentMetadata) - the primary cross-project leakage
+// regression proof, exercised end to end rather than only at the pure
+// helper level above.
+
+function writeHistoryFixture(t, historyObject) {
+  fs.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true });
+  fs.writeFileSync(HISTORY_FILE, JSON.stringify(historyObject));
+  t.after(() => fs.rmSync(path.dirname(HISTORY_FILE), { recursive: true, force: true }));
+}
+
+const VALID_AGGREGATE_FIELDS = { runsConsidered: 10, passes: 7, failures: 3, retryPasses: 2, generatedAt: "2026-01-01T00:00:00.000Z" };
+
+test("readHistory: matching project (VALID + same VALID) -> History returned unchanged", (t) => {
+  writeHistoryFixture(t, { available: true, projectId: "external-poi-sut", browser: "chrome", branch: "main", ...VALID_AGGREGATE_FIELDS });
+
+  assert.deepEqual(readHistory({ projectId: "external-poi-sut" }), {
+    runsConsidered: 10,
+    passes: 7,
+    failures: 3,
+    retryPasses: 2,
+  });
+});
+
+test("readHistory: different project (VALID + different VALID) -> null - primary cross-project leakage regression proof", (t) => {
+  writeHistoryFixture(t, { available: true, projectId: "synthetic-project", browser: "chrome", branch: "main", ...VALID_AGGREGATE_FIELDS });
+
+  assert.equal(readHistory({ projectId: "external-poi-sut" }), null);
+});
+
+test("readHistory: scoped current + ABSENT history projectId -> null (the primary correction from the earlier #19.3A proposal)", (t) => {
+  writeHistoryFixture(t, { available: true, browser: "chrome", branch: "main", ...VALID_AGGREGATE_FIELDS });
+
+  assert.equal(readHistory({ projectId: "external-poi-sut" }), null);
+});
+
+test("readHistory: scoped current + malformed history projectId -> null for null/empty/whitespace/non-string, never treated as legacy absence", (t) => {
+  for (const malformed of [null, "", "   ", 123]) {
+    writeHistoryFixture(t, {
+      available: true,
+      projectId: malformed,
+      browser: "chrome",
+      branch: "main",
+      ...VALID_AGGREGATE_FIELDS,
+    });
+    assert.equal(readHistory({ projectId: "external-poi-sut" }), null, `expected null for history.projectId=${JSON.stringify(malformed)}`);
+  }
+});
+
+test("readHistory: ABSENT current + ABSENT history -> History returned unchanged (ALLOW_LEGACY, narrow compatibility)", (t) => {
+  writeHistoryFixture(t, { available: true, browser: "chrome", branch: "main", ...VALID_AGGREGATE_FIELDS });
+
+  assert.deepEqual(readHistory({}), { runsConsidered: 10, passes: 7, failures: 3, retryPasses: 2 });
+  assert.deepEqual(readHistory(undefined), { runsConsidered: 10, passes: 7, failures: 3, retryPasses: 2 });
+});
+
+test("readHistory: ABSENT current + scoped (VALID) history -> null - an unscoped analysis cannot consume scoped history", (t) => {
+  writeHistoryFixture(t, { available: true, projectId: "external-poi-sut", browser: "chrome", branch: "main", ...VALID_AGGREGATE_FIELDS });
+
+  assert.equal(readHistory({}), null);
+});
+
+test("readHistory: INVALID current identity excludes all history, including otherwise-matching and ABSENT history", (t) => {
+  writeHistoryFixture(t, { available: true, projectId: "external-poi-sut", browser: "chrome", branch: "main", ...VALID_AGGREGATE_FIELDS });
+  for (const malformed of [null, "", "   ", 123]) {
+    assert.equal(readHistory({ projectId: malformed }), null, `expected null for current metadata.projectId=${JSON.stringify(malformed)}`);
+  }
+
+  writeHistoryFixture(t, { available: true, browser: "chrome", branch: "main", ...VALID_AGGREGATE_FIELDS });
+  assert.equal(readHistory({ projectId: "" }), null, "INVALID current + ABSENT history must also be null");
+});
+
+test("readHistory: VALID identity comparison is whitespace-normalized (trimmed) on both sides", (t) => {
+  writeHistoryFixture(t, { available: true, projectId: "external-poi-sut", browser: "chrome", branch: "main", ...VALID_AGGREGATE_FIELDS });
+  assert.notEqual(readHistory({ projectId: " external-poi-sut " }), null, "leading/trailing whitespace on the current side must still match");
+
+  writeHistoryFixture(t, { available: true, projectId: " external-poi-sut ", browser: "chrome", branch: "main", ...VALID_AGGREGATE_FIELDS });
+  assert.notEqual(readHistory({ projectId: "external-poi-sut" }), null, "leading/trailing whitespace on the history side must still match");
+});
+
+test("readHistory: available:false remains unusable regardless of project identity on either side - project match never overrides availability", (t) => {
+  writeHistoryFixture(t, { available: false, reason: "no prior runs", projectId: "external-poi-sut" });
+  assert.equal(readHistory({ projectId: "external-poi-sut" }), null);
 });
 
 // --- pipeline (contract-boundary integration) test ------------------------
