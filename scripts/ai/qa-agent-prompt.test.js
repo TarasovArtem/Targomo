@@ -3,6 +3,56 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { CLASSIFICATIONS, buildSystemPrompt, buildUserPrompt } = require("./qa-agent-prompt");
+const { TARGOMO_PROJECT_PROFILE } = require("./project-profile");
+
+// Roadmap #19.2 - project-identity parameterization proof. A unit
+// boundary proof only (not the full #19.4 second-project proof): it
+// shows buildSystemPrompt() genuinely renders whichever ProjectProfile it
+// is given, using only data - no core edit, no provider call, no
+// classification/policy/knowledge/correlation code touched.
+const SYNTHETIC_PROJECT_PROFILE = {
+  id: "synthetic-project",
+  displayName: "Synthetic Application",
+  knownProjectConstraints: ["Synthetic project constraint."],
+};
+
+// Pins the exact historical sentence, not just a substring match - this
+// is the specific claim Roadmap #19.2 makes (production prompt output is
+// byte-for-byte unchanged by moving project identity into ProjectProfile),
+// so the regression guard should be exact, not merely "close enough".
+const EXACT_PRODUCTION_PERSONA_SENTENCE =
+  "You are a Senior QA Automation Engineer performing failure triage for a Cypress end-to-end suite that tests a live, externally hosted third-party application (poi.targomo.com). The test suite does not control that application's code, infrastructure, or uptime.";
+
+test("buildSystemPrompt: default (no argument) renders the exact, byte-for-byte historical Targomo persona sentence", () => {
+  const prompt = buildSystemPrompt();
+  assert.ok(prompt.startsWith(EXACT_PRODUCTION_PERSONA_SENTENCE), "persona sentence must be byte-identical to the pre-#19.2 hardcoded text");
+});
+
+test("buildSystemPrompt: an explicit Targomo profile argument renders identically to the default", () => {
+  assert.equal(buildSystemPrompt(TARGOMO_PROJECT_PROFILE), buildSystemPrompt());
+});
+
+test("buildSystemPrompt: a synthetic second project renders its own identity and NOT Targomo's, supplied purely as data", () => {
+  const prompt = buildSystemPrompt(SYNTHETIC_PROJECT_PROFILE);
+  assert.match(prompt, /Synthetic Application/);
+  assert.doesNotMatch(prompt, /poi\.targomo\.com/);
+  assert.doesNotMatch(prompt, /Targomo/i);
+});
+
+test("buildSystemPrompt: framework wording ('Cypress') is intentionally unchanged regardless of project profile - framework portability is a separate, later stage", () => {
+  assert.match(buildSystemPrompt(SYNTHETIC_PROJECT_PROFILE), /Cypress end-to-end suite/);
+  assert.match(buildSystemPrompt(), /Cypress end-to-end suite/);
+});
+
+test("buildSystemPrompt: swapping projectProfile changes only the persona sentence - every generic rule (grounding, injection defense, output contract) is byte-identical", () => {
+  const targomoPrompt = buildSystemPrompt();
+  const syntheticPrompt = buildSystemPrompt(SYNTHETIC_PROJECT_PROFILE);
+
+  const afterPersonaTargomo = targomoPrompt.slice(targomoPrompt.indexOf("For each failed test"));
+  const afterPersonaSynthetic = syntheticPrompt.slice(syntheticPrompt.indexOf("For each failed test"));
+
+  assert.equal(afterPersonaTargomo, afterPersonaSynthetic);
+});
 
 test("CLASSIFICATIONS: exactly the six allowed values", () => {
   assert.deepEqual(

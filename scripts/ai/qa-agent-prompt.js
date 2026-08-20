@@ -16,6 +16,8 @@
 
 "use strict";
 
+const { TARGOMO_PROJECT_PROFILE } = require("./project-profile");
+
 // Single source of truth for valid classifications - reused by
 // analyze-failure.js's response validation, so the two can never drift
 // apart.
@@ -43,8 +45,18 @@ const EXAMPLE_RESULT_ITEM = {
   shouldRetry: false,
 };
 
-function buildSystemPrompt() {
-  return `You are a Senior QA Automation Engineer performing failure triage for a Cypress end-to-end suite that tests a live, externally hosted third-party application (poi.targomo.com). The test suite does not control that application's code, infrastructure, or uptime.
+// `projectProfile` supplies stable project identity/display text (see
+// scripts/ai/project-profile.js, Roadmap #19.2) - defaults to
+// this repository's single production project so every existing caller
+// (analyze-failure.js, and every test in this file that calls
+// buildSystemPrompt() with no arguments) keeps working unchanged. A
+// future second project is supplied by passing a different profile
+// object here - never by editing this function. Framework identity
+// ("Cypress" below) is deliberately NOT parameterized yet - that is a
+// separate, later Roadmap #19 stage (framework portability), not this
+// one (project portability only).
+function buildSystemPrompt(projectProfile = TARGOMO_PROJECT_PROFILE) {
+  return `You are a Senior QA Automation Engineer performing failure triage for a Cypress end-to-end suite that tests ${projectProfile.displayName}. The test suite does not control that application's code, infrastructure, or uptime.
 
 For each failed test you are given, classify it using ONLY the evidence provided. Do not assume or invent anything not present in the supplied context.
 

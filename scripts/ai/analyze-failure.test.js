@@ -918,7 +918,40 @@ test("Roadmap #16C 7: existing sourceContext fields (browserCorrelation, browser
   assert.equal(report.sourceContext.commit, "abc123");
   assert.equal(report.sourceContext.branch, "main");
   assert.equal(report.sourceContext.browser, "chrome");
+  assert.equal(report.sourceContext.projectId, null, "context fixture above carries no metadata.projectId");
   assert.deepEqual(report.sourceContext.relevantKnowledge, []);
+});
+
+// Roadmap #19.2 - explicit project identity foundation. projectId is
+// read straight from context.metadata.projectId (set by
+// collect-context.js in production) - these tests prove the pass-through
+// is exact and additive, and that adding it changed nothing else about
+// provider selection, provider provenance, or policy shape.
+test("Roadmap #19.2: sourceContext.projectId equals the production project id when context.metadata carries it", async () => {
+  const provider = providerReturning([goodItem()]);
+  const report = await buildFailureReport(
+    { ...context, metadata: { ...context.metadata, projectId: "targomo-poi" } },
+    { provider, history: null, relevantKnowledge: [] }
+  );
+
+  assert.equal(report.sourceContext.projectId, "targomo-poi");
+});
+
+test("Roadmap #19.2: projectId is additive only - provider provenance and policy field shape are unchanged", async () => {
+  const provider = providerReturning([goodItem({ shouldCreateBug: true })]);
+  const report = await buildFailureReport(
+    { ...context, metadata: { ...context.metadata, projectId: "targomo-poi" } },
+    { provider, history: null, relevantKnowledge: [] }
+  );
+
+  assert.equal(report.analysis.provider, "unknown");
+  assert.equal(report.analysis.providerAttempts, 1);
+  assert.equal(report.analysis.firstAttemptError, null);
+  // goodItem() defaults to classification: "TEST_BUG", so policy must
+  // still force shouldCreateBug to false regardless of projectId.
+  assert.equal(report.results[0].shouldCreateBug, false);
+  assert.equal(report.results[0].policy.adjusted, true);
+  assert.equal(report.results[0].policy.originalShouldCreateBug, true);
 });
 
 // Phase 10: prompt/report consistency - the knowledge visible in the real

@@ -15,6 +15,7 @@
 const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
+const { TARGOMO_PROJECT_PROFILE } = require("./project-profile");
 
 const ROOT = path.resolve(__dirname, "..", "..");
 const REPORTS_DIR = path.join(ROOT, "reports", "cypress");
@@ -30,15 +31,12 @@ const MAX_TOTAL_RELEVANT_BYTES = 150 * 1024;
 // only the trailing stack lines are capped.
 const MAX_STACK_CHARS = 4000;
 
-// Short, static facts about this repo's known engineering limitations,
-// surfaced to the QA Agent as background context (never as a
-// classification shortcut - see qa-agent-prompt.js rule 9). Kept as a
-// plain list here rather than scattered if-statements in JS, so adding a
-// new known issue is a one-line change, not new branching logic.
-const KNOWN_PROJECT_CONSTRAINTS = [
-  "Firefox runs in this CI workflow (Roadmap #14C) in a different execution environment from Chrome/Edge: Chrome and Edge run inside a cypress/included Docker container, while Firefox runs directly on the bare GitHub Actions runner with Firefox installed explicitly. This split exists because Firefox previously hung during WebDriver session creation when run inside that same nested container - an infrastructure/sandboxing limitation of that specific setup, not evidence of a browser-specific product bug or test defect.",
-  "The application under test (poi.targomo.com) is a live, externally hosted third-party service outside this repository's control - it has no staging/mocked environment, so failures can reflect real upstream instability, not just this repo's code.",
-];
+// This repository's single production project (see
+// scripts/ai/project-profile.js, Roadmap #19.2). Stable project
+// identity and known-constraint text are owned by that module, not here -
+// this file only consumes it (project identity/constraints, never a
+// classification shortcut - see qa-agent-prompt.js rule 9).
+const PROJECT_PROFILE = TARGOMO_PROJECT_PROFILE;
 
 // Only files under these repo-relative roots (or exactly matching one of
 // the extra allowed paths) are ever read into relevantFiles, even if an
@@ -72,6 +70,11 @@ function getMetadata() {
     : null;
 
   return {
+    // Stable, machine-readable project identity (Roadmap #19.2) - always
+    // this repository's single production project today; see
+    // scripts/ai/project-profile.js for the single source of
+    // truth this value is read from.
+    projectId: PROJECT_PROFILE.id,
     repository: process.env.GITHUB_REPOSITORY || runGit(["remote", "get-url", "origin"]) || null,
     commit: process.env.GITHUB_SHA || runGit(["rev-parse", "HEAD"]) || null,
     branch:
@@ -370,7 +373,7 @@ function main() {
     failedTests = extractFailedTests(reports);
     if (failedTests.length > 0) {
       relevantFiles = buildRelevantFiles(failedTests, warnings);
-      knownProjectConstraints = KNOWN_PROJECT_CONSTRAINTS;
+      knownProjectConstraints = PROJECT_PROFILE.knownProjectConstraints;
     }
   }
 
@@ -412,6 +415,5 @@ module.exports = {
   buildRelevantFiles,
   getMetadata,
   truncateText,
-  KNOWN_PROJECT_CONSTRAINTS,
   main,
 };
