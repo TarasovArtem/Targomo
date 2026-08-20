@@ -325,13 +325,23 @@ function summarizeProviderError(err) {
 async function runProviderAnalysis(
   provider,
   context,
-  { maxAttempts = 3, retryDelaysMs = [500, 1500], sleep = defaultSleep } = {}
+  { maxAttempts = 3, retryDelaysMs = [500, 1500], sleep = defaultSleep, projectProfile } = {}
 ) {
   // A provider missing analyze() (or not an object at all) can never
   // succeed on retry - fail once, clearly, before spending any attempts.
   validateProvider(provider);
 
-  const systemPrompt = buildSystemPrompt();
+  // Roadmap #19.4S: orchestration wiring only - buildSystemPrompt() has
+  // accepted an optional projectProfile since Roadmap #19.2 (see
+  // qa-agent-prompt.js), but no caller of this function ever threaded one
+  // through, so the ACTUAL provider-visible system prompt always used the
+  // production default regardless of which project a context described.
+  // `projectProfile` is `undefined` for every existing caller (production
+  // main() never passes one), so buildSystemPrompt(undefined) falls
+  // through to its own existing default parameter exactly as before -
+  // this line changes no existing behavior, only what a future explicit
+  // caller can opt into.
+  const systemPrompt = buildSystemPrompt(projectProfile);
   const userPrompt = buildUserPrompt(context);
 
   let raw;
@@ -402,6 +412,7 @@ async function buildFailureReport(
     provider = createProvider(),
     history = readHistory(context.metadata),
     relevantKnowledge = computeRelevantKnowledge(context),
+    projectProfile,
   } = {}
 ) {
   const failedTests = context.failedTests || [];
@@ -420,7 +431,15 @@ async function buildFailureReport(
   // unconditional assignment, unlike history's `if (history)` guard.
   context.relevantKnowledge = relevantKnowledge;
 
-  const { results, providerAttempts, firstAttemptError } = await runProviderAnalysis(provider, context);
+  // Roadmap #19.4S: threaded through to runProviderAnalysis's own
+  // system-prompt profile selection only - see the comment there. Never
+  // read anywhere else in this function: it does not touch context,
+  // history, relevantKnowledge, or report provenance, all of which stay
+  // exactly the explicit, caller-supplied data channels Roadmap
+  // #19.2/#19.3 already established.
+  const { results, providerAttempts, firstAttemptError } = await runProviderAnalysis(provider, context, {
+    projectProfile,
+  });
 
   if (results.length !== failedTests.length) {
     throw new AnalyzerError(
