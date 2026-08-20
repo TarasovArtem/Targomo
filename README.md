@@ -4,7 +4,7 @@
 
 #### Description
 
-QA AI Agent is an AI-assisted automated-test failure triage system that collects failure evidence, correlates multi-browser results, performs one centralized AI analysis, applies application-level safety policy, and evaluates its historical decisions against a versioned regression dataset.
+QA AI Agent is an AI-assisted automated-test failure triage system that collects failure evidence, correlates multi-browser results, performs one centralized AI analysis through a provider-neutral abstraction (Groq and Gemini both supported today), applies a deterministic application-level safety policy, and evaluates its historical decisions against a versioned regression dataset.
 
 See [TEST_CASES.md](TEST_CASES.md) for the full list of manual test cases covered by the Cypress suite, with preconditions, steps, and expected results for each.
 
@@ -16,6 +16,18 @@ The repository currently uses the [Targomo](https://poi.targomo.com) POI (points
 
 A Playwright + TypeScript port of the same Cypress scenarios and Page Object Model, targeting the same Targomo application, lives at [TarasovArtem/TargomoPlaywright](https://github.com/TarasovArtem/TargomoPlaywright) (a separate repository, not part of this project).
 
+### Architectural Invariants
+
+These properties are enforced by design and construction, not merely by convention - most have dedicated regression tests:
+
+- **Cypress remains authoritative.** AI analysis is a diagnostic layer on top of the real test result; nothing downstream can turn a failed Cypress run green, and nothing upstream requires AI to run at all.
+- **One failing workflow → one logical AI analysis**, never one per browser - browser evidence is aggregated first, and a provider's own bounded transport retries stay inside that same one logical analysis.
+- **Provider adapters are transport-only.** Authentication, endpoint, and response-envelope extraction live in `scripts/ai/providers/`; prompt construction, semantic parsing, and policy live in core and never change per provider.
+- **Deterministic policy owns the final bug-creation decision** - only a `PRODUCT_BUG` classification may keep a model-recommended `shouldCreateBug: true`; every other classification is forced to `false`, regardless of what the model said.
+- **Knowledge is guidance, never evidence** - curated knowledge units can broaden a hypothesis but can never manufacture a fact about the current run, override direct evidence, browser correlation, history, or policy.
+- **Provider errors are normalized** to one shared, provider-neutral vocabulary (`AUTH`/`RATE_LIMIT`/`TIMEOUT`/`NETWORK`/`INVALID_RESPONSE`/`CONFIGURATION`/`UNKNOWN`) before the application reasons about a failure - never an HTTP status code or a provider name.
+- **No automatic provider fallback** - a misconfigured or failing provider fails the analysis honestly rather than silently substituting another provider or a fabricated result.
+- **Evaluation history is immutable once frozen** - every Dataset/Baseline version, once merged, is never rewritten; new evidence becomes a new, additive sample or a new version, never a retroactive edit.
 
 ### Commands for running tests and files structure
 
@@ -63,6 +75,34 @@ or, without picking a browser (uses Cypress's default):
     ./cypress/e2e/pageObjects/map.js
     ./cypress/e2e/pageObjects/navigation.js
     ./cypress/e2e//pageObjects/subCategories.js
+
+
+#### QA Agent files structure
+
+    ./scripts/ai/agent-policy.js
+    ./scripts/ai/aggregate-browser-context.js
+    ./scripts/ai/analyze-failure.js
+    ./scripts/ai/collect-context.js
+    ./scripts/ai/collect-history.js
+    ./scripts/ai/config.js
+    ./scripts/ai/format-pr-comment.js
+    ./scripts/ai/pr-comment-client.js
+    ./scripts/ai/qa-agent-prompt.js
+
+    ./scripts/ai/providers/index.js
+    ./scripts/ai/providers/provider-contract.js
+    ./scripts/ai/providers/provider-error.js
+    ./scripts/ai/providers/mock-provider.js
+    ./scripts/ai/providers/groq-provider.js
+    ./scripts/ai/providers/gemini-provider.js
+
+    ./scripts/ai/knowledge/schema.js
+    ./scripts/ai/knowledge/loader.js
+    ./scripts/ai/knowledge/selector.js
+    ./scripts/ai/knowledge/units/*.json   # 6 curated units
+
+    ./scripts/ai/evaluation/dataset.json ... dataset-v5.json
+    ./scripts/ai/evaluation/baseline-v1.json ... baseline-v5.json
 
 
 ### Continuous Integration
@@ -119,10 +159,10 @@ Required branch-protection checks are `Unit tests`, `Cypress - chrome`, and `Cyp
 The QA Agent's AI backend is a swappable **provider abstraction** (`scripts/ai/providers/`), selected at runtime via the `AI_PROVIDER` environment variable.
 
 ```
-Cypress (Chrome)      Cypress (Edge)
-   │  browser-result.json      │  browser-result.json
-   │  context.json (on failure)│  context.json (on failure)
-   ▼                           ▼
+Cypress (Chrome)      Cypress (Edge)      Cypress (Firefox)
+   │  browser-result.json      │  browser-result.json      │  browser-result.json
+   │  context.json (on failure)│  context.json (on failure)│  context.json (on failure)
+   ▼                           ▼                            ▼
         Browser aggregation (scripts/ai/aggregate-browser-context.js)
    │  reads every browser's outcome; decides whether ANY failed;
    │  deterministically picks ONE primary failing browser;
@@ -133,9 +173,15 @@ Failure Context Collector output + browserCorrelation
    │  browser, known project constraints, browser correlation -
    │  no secrets, no full repo dump
    ▼
+Knowledge selection (scripts/ai/knowledge/selector.js) - deterministic, offline, zero provider calls
+   │  attaches context.relevantKnowledge (guidance only, may be [])
+   ▼
 QA prompt (scripts/ai/qa-agent-prompt.js)
    ▼
-Provider abstraction (scripts/ai/providers/) ── provider.analyze({systemPrompt, userPrompt})
+Provider Factory (scripts/ai/providers/) ── provider.analyze({systemPrompt, userPrompt})
+   │  AI_PROVIDER=mock ──→ MockProvider    (local dev, all unit tests)
+   │  AI_PROVIDER=groq ──→ GroqProvider    (CI - the only provider wired into GitHub Actions today)
+   │  AI_PROVIDER=gemini → GeminiProvider  (implemented, real-API-verified, not CI-wired)
    ▼
 raw model response (a string - never trusted as-is)
    ▼
@@ -144,7 +190,7 @@ validation / safeguards (scripts/ai/analyze-failure.js)
    ▼
 application action policy (scripts/ai/agent-policy.js) - see below
    ▼
-enriched AI report (reports/ai/ai-report.json)
+enriched AI report (reports/ai/ai-report.json) - includes provenance (providerAttempts, firstAttemptError)
    ▼
 PR comment (pull_request runs only)
 ```
@@ -161,16 +207,17 @@ provider.analyze({ systemPrompt, userPrompt }) → Promise<string>
 
 A provider's only job is talking to an LLM and handing back its raw text response - it never returns a parsed/trusted QA report object. Everything downstream of that string (JSON parsing, classification enum checks, confidence range, evidence shape, the arbitrary-wait safeguard) is the QA Agent's responsibility, not the provider's - a provider that formats its output oddly, or a future provider from a different vendor, can't skip QA validation just because it's a different provider.
 
-The boundary is runtime-checked, not just documented: `providers/provider-contract.js` rejects a provider missing `analyze()` (or a non-empty-string response) with a clear error before it can reach `JSON.parse` or a retry loop. Provider failures are normalized to one shared `ProviderError` shape (`message`, `code` from a small provider-neutral set - `AUTH`/`RATE_LIMIT`/`TIMEOUT`/`NETWORK`/`INVALID_RESPONSE`/`CONFIGURATION`/`UNKNOWN`, `retryable`, `cause`) in `providers/provider-error.js`, so `analyze-failure.js`'s retry logic only ever asks "was this marked retryable?" - never an HTTP status code or a provider name. Each provider also exposes a plain `provider.name` string (`"mock"` today), which the application attaches to the report as `analysis.provider` *after* the model response is validated - a provider never asserts its own identity inside the JSON it returns.
+The boundary is runtime-checked, not just documented: `providers/provider-contract.js` rejects a provider missing `analyze()` (or a non-empty-string response) with a clear error before it can reach `JSON.parse` or a retry loop. Provider failures are normalized to one shared `ProviderError` shape (`message`, `code` from a small provider-neutral set - `AUTH`/`RATE_LIMIT`/`TIMEOUT`/`NETWORK`/`INVALID_RESPONSE`/`CONFIGURATION`/`UNKNOWN`, `retryable`, `cause`) in `providers/provider-error.js`, so `analyze-failure.js`'s retry logic only ever asks "was this marked retryable?" - never an HTTP status code or a provider name. Each provider also exposes a plain `provider.name` string (`"mock"`, `"groq"`, or `"gemini"`, depending on which is configured), which the application attaches to the report as `analysis.provider` *after* the model response is validated - a provider never asserts its own identity inside the JSON it returns.
 
-Two providers exist today, used in two different places on purpose - this is the project's first real AI provider, so it's deliberately scoped to CI only until its output has been reviewed:
+**Three providers exist today**, used in three different places on purpose. Full detail (contract, transport differences, provenance, validation status) is in [Provider / Model Abstraction (Roadmap #18)](#provider--model-abstraction-roadmap-18) below:
 
 - **`MockProvider`** (`AI_PROVIDER=mock`) - makes no network call, returns an honest, schema-valid `UNKNOWN`/50%-confidence stub result. Used for **local development and all unit tests**.
-- **`GroqProvider`** (`AI_PROVIDER=groq`, `scripts/ai/providers/groq-provider.js`) - calls [Groq's](https://groq.com) OpenAI-compatible Chat Completions API over `fetch` with the configured `AI_MODEL` (currently `openai/gpt-oss-120b`), with a 30s timeout (`AbortController`) and Groq's HTTP/network errors mapped to the same generic `ProviderError` codes any provider uses. Used **only in GitHub Actions**.
+- **`GroqProvider`** (`AI_PROVIDER=groq`) - calls [Groq's](https://groq.com) OpenAI-compatible Chat Completions API. Used **only in GitHub Actions** - the sole provider currently wired into CI.
+- **`GeminiProvider`** (`AI_PROVIDER=gemini`) - calls [Google's Gemini](https://ai.google.dev) native `generateContent` REST API directly. Fully implemented and real-API-verified, but **not wired into CI** - selectable locally/manually via `AI_PROVIDER=gemini` with a real `AI_API_KEY`.
 
-This is a deliberate choice, not a bug: the project previously called [GitHub Models](https://docs.github.com/en/github-models), which was [fully retired by GitHub on 2026-07-30](https://github.blog/changelog/2026-07-30-github-models-is-now-retired/) (confirmed live - its inference API returned `410 Gone` for every request). The AI layer was refactored to this provider-neutral shape first, and Groq was added as the first real provider once that abstraction existed. Adding another provider later is a change scoped to `scripts/ai/providers/` plus `AI_PROVIDER`/`AI_MODEL`/`AI_API_KEY` - it does not touch context collection, prompts, PR comments, or the workflow; timeouts and provider-specific config validation are each that provider's own responsibility, not `analyze-failure.js`'s.
+This is a deliberate choice, not a bug: the project previously called [GitHub Models](https://docs.github.com/en/github-models), which was [fully retired by GitHub on 2026-07-30](https://github.blog/changelog/2026-07-30-github-models-is-now-retired/) (confirmed live - its inference API returned `410 Gone` for every request). The AI layer was refactored to this provider-neutral shape first, and Groq was added as the first real provider once that abstraction existed; Gemini was added second (Roadmap #18) to prove the abstraction generalizes to a second, structurally different vendor. Adding another provider later is a change scoped to `scripts/ai/providers/` plus `AI_PROVIDER`/`AI_MODEL`/`AI_API_KEY` - it does not touch context collection, prompts, PR comments, or the workflow; timeouts and provider-specific config validation are each that provider's own responsibility, not `analyze-failure.js`'s.
 
-There is intentionally **no fallback from Groq to MockProvider**. If `AI_PROVIDER=groq` and `AI_API_KEY`/`AI_MODEL` are missing, or the Groq API call fails, the analyzer fails honestly (`fail()` / a warning in the workflow) rather than silently substituting a fabricated mock analysis - "AI analysis unavailable" is always more honest than a fake result. Cypress's own screenshots, videos, and structured test report are collected independently and are unaffected either way (see the workflow's upload-artifact steps).
+There is intentionally **no fallback between providers, and no automatic multi-provider execution**. If a configured provider is missing `AI_API_KEY`/`AI_MODEL`, or its API call fails, the analyzer fails honestly (`fail()` / a warning in the workflow) rather than silently substituting a fabricated mock analysis or trying a different provider - "AI analysis unavailable" is always more honest than a fake result. Cypress's own screenshots, videos, and structured test report are collected independently and are unaffected either way (see the workflow's upload-artifact steps).
 
 When any E2E job fails, the centralized `QA AI triage` step analyzes the selected primary failure and classifies it as `PRODUCT_BUG`, `TEST_BUG`, `FLAKY_TEST`, `ENVIRONMENT`, `EXTERNAL_DEPENDENCY`, or `UNKNOWN`, before recommending a fix. It never changes whether the job passes or fails - it's a diagnostic layer on top of the real test result, not a gate: Cypress's own pass/fail is always what determines the workflow's final status, regardless of whether AI analysis ran, succeeded, or failed.
 
@@ -183,7 +230,7 @@ The model's classification, confidence, `shouldRetry`, and `shouldCreateBug` are
 
 This is a ceiling on which classifications *may* create a bug, not a floor that automatically files one for every `PRODUCT_BUG` - a separate confidence-threshold policy is future work (see [Roadmap](#roadmap)), not implemented today. There is currently **no automatic GitHub Issue creation** - `shouldCreateBug` is a field in the report/PR comment for a human to act on, not an automated trigger.
 
-The final report distinguishes the model's original recommendation (`originalShouldCreateBug`) from the application's final decision (`finalShouldCreateBug`/`shouldCreateBug`) and records whether policy actually overrode the model (`policyAdjusted`) - see the [Evaluation infrastructure](#evaluation-infrastructure) section for how this distinction is used in offline evaluation.
+The final report distinguishes the model's original recommendation from the application's final decision: each result's `shouldCreateBug` is the final, post-policy value, and a nested `policy` object (`policy.originalShouldCreateBug`, `policy.adjusted`) records the model's raw recommendation and whether policy actually overrode it - `policy.adjusted: false` means policy ran and found no override necessary, not that policy was skipped. The offline Evaluation Dataset schema curates the same distinction under its own flat field names (`actual.originalShouldCreateBug`, `actual.policyAdjusted`) - see the [Evaluation infrastructure](#evaluation-infrastructure) section for how this is used in offline evaluation.
 
 **Local development** - `AI_PROVIDER=mock`, no external API, no account, no key:
 
@@ -202,6 +249,16 @@ AI_API_KEY: ${{ secrets.GROQ_API_KEY }}
 ```
 
 `GROQ_API_KEY` exists only as a **GitHub repository secret** (Settings → Secrets and variables → Actions) - it is never committed, never placed in a `.env` file, and never printed to a log; the workflow maps it to the generic `AI_API_KEY` application variable so that `scripts/ai/config.js` and `analyze-failure.js` stay provider-neutral and never learn Groq's name. `GITHUB_TOKEN` is unrelated and still used elsewhere in the pipeline (flaky-test history via the Actions API, posting PR comments) - never as an AI inference credential.
+
+**Gemini (local/manual only - not currently wired into the GitHub Actions workflow):**
+
+```
+AI_PROVIDER=gemini
+AI_MODEL=gemini-3.6-flash
+AI_API_KEY=<your own Gemini API key>   # never commit a real key
+```
+
+There is no `GEMINI_API_KEY` repository secret and no Gemini step in `.github/workflows/cypress.yml` - selecting `AI_PROVIDER=gemini` today only works locally, with your own key exported in your shell. See [Provider / Model Abstraction (Roadmap #18)](#provider--model-abstraction-roadmap-18) for what has and has not been validated about this provider.
 
 `AI_PROVIDER` (default `mock`), `AI_MODEL`, and `AI_API_KEY` are read from `scripts/ai/config.js`; an unrecognized `AI_PROVIDER` value throws a clear error rather than silently falling back to a real provider.
 
@@ -412,7 +469,7 @@ Every observation was a disposable branch/PR closed without merge after evidence
 
 ### Dataset v5 / Baseline v5 (Roadmap #16E)
 
-**Status: SCHEMA/EVALUATOR IMPLEMENTED, LOCAL - FINAL EVIDENCE LOCK NOT YET FINALIZED.** Dataset v5 (`scripts/ai/evaluation/dataset-v5.json`) is additive over Dataset v4 exactly like every prior version: all 9 Dataset v4 samples migrated byte-identical (proven by a dedicated deep-equality test against every old field, not just sample ids), plus four new live samples from Roadmap #16D (`K1-relevant-timeout-knowledge`, `K3-cross-browser-differing-signatures`, `K4-firefox-knowledge-vs-direct-evidence`, `K5-zero-relevant-knowledge`) - 13 scorable samples total. K2 is deliberately **not** a scorable sample: its original `relevantKnowledge=[]` hypothesis was falsified, so it is preserved instead as a structurally separate `dataset.historicalObservations` entry that `scoring-v5.js`/`regression-v5.js` never read - proven by a test asserting identical metrics with and without that field present.
+**Status: IMPLEMENTED, MERGED, EVIDENCE LOCK FINALIZED.** Dataset v5 (`scripts/ai/evaluation/dataset-v5.json`) is additive over Dataset v4 exactly like every prior version: all 9 Dataset v4 samples migrated byte-identical (proven by a dedicated deep-equality test against every old field, not just sample ids), plus four new live samples from Roadmap #16D (`K1-relevant-timeout-knowledge`, `K3-cross-browser-differing-signatures`, `K4-firefox-knowledge-vs-direct-evidence`, `K5-zero-relevant-knowledge`) - 13 scorable samples total. K2 is deliberately **not** a scorable sample: its original `relevantKnowledge=[]` hypothesis was falsified, so it is preserved instead as a structurally separate `dataset.historicalObservations` entry that `scoring-v5.js`/`regression-v5.js` never read - proven by a test asserting identical metrics with and without that field present.
 
 `regression-v5.js` protects 15 dimensions per sample (the 10 already protected in v1-v4, plus five new ones, each justified by a concrete Roadmap #16D finding rather than added speculatively):
 
@@ -423,11 +480,13 @@ Every observation was a disposable branch/PR closed without merge after evidence
 
 Baseline v5 is a static repository file - `evaluate-v5.js`/`regression-v5.js` only ever read it, never write or regenerate it, verified by mutation tests that load the real on-disk baseline independently of a deliberately-mutated in-memory dataset copy. It honestly freezes K1's and K3's known weaknesses (`evidence=partial`, `inferenceQuality=partial`; K3 additionally `modelShouldCreateBugCorrect=false`) rather than normalizing them to `pass` - the baseline records accepted observed state, not an aspirational one. All 15 dimensions follow the same `fail < partial < pass` ordering (`not_applicable`/`null` outside that ordering, never silently coerced) and the same "any regression anywhere wins" precedence already used since Roadmap #12.
 
-`npm run eval:ai:v5` / `npm run eval:regression:v5` are fully offline, and - since Roadmap #16E.5 - the `QA Agent evaluation` CI job now explicitly runs all five evaluation/regression pairs (`v1` through `v5`), closing the CI coverage gap `v3`/`v4` had also carried since their own implementation. **Final Dataset v5 evidence lock is intentionally NOT FINALIZED**: an independent review recommended two optional strengthening repeats (R1 - a differently-shaped K1 repeat; R2 - a differently-shaped K3 repeat) to corroborate the two `partial`-dimension findings before they are treated as durable; neither has been run, and the schema supports adding them later (via the existing `metadata.revalidationOfExperiment` provenance field) without any redesign.
+`npm run eval:ai:v5` / `npm run eval:regression:v5` are fully offline, and - since Roadmap #16E.5 - the `QA Agent evaluation` CI job now explicitly runs all five evaluation/regression pairs (`v1` through `v5`), closing the CI coverage gap `v3`/`v4` had also carried since their own implementation.
+
+**Final Evidence Lock Decision (Roadmap #16E, finalized): FINALIZE WITHOUT REPEATS.** An independent review had identified two optional strengthening repeats (R1 - a differently-shaped K1 repeat; R2 - a differently-shaped K3 repeat) that *could* corroborate the two `partial`-dimension findings (K1's `evidence`, K3's `evidence`/`modelShouldCreateBugCorrect`) before they're treated as durable. A dedicated decision review concluded these repeats are not required to lock Dataset v5/Baseline v5: K1 and K3's `partial`/`fail` findings are recorded honestly as known weaknesses, not smoothed over as passes, so there is nothing an unrun repeat is silently covering up; and K3's specific policy-safety claim (raw model recommending `shouldCreateBug=true` for a `TEST_BUG`, correctly overridden by `agent-policy.js`) already has independent corroboration from the pre-existing `experiment-47` sample (Dataset v4), which shows the identical raw-vs-final divergence pattern. R1/R2 remain available as future, purely additive work (via the existing `metadata.revalidationOfExperiment` provenance field) if a stronger evidentiary basis is ever wanted - they are not blocking, and their absence is not a defect.
 
 ### Curated External Knowledge (Roadmap #17)
 
-**Status: FIRST EXTERNAL UNITS ADDED (LOCAL, PRE-REVIEW).** Adds the first `CURATED_EXTERNAL` knowledge units - statically curated, source-verified summaries of authoritative external documentation, not project-derived and not fetched at runtime. `CURATED_EXTERNAL` existed in the schema since Roadmap #15 but had zero units until this phase. Three candidates were researched against primary/authoritative sources only (official Cypress docs, official GitHub Actions docs, MDN); **two were accepted, one was rejected** - accuracy took priority over reaching a target corpus size, per this roadmap item's own explicit constraint.
+**Status: COMPLETE, MERGED.** Adds the first `CURATED_EXTERNAL` knowledge units - statically curated, source-verified summaries of authoritative external documentation, not project-derived and not fetched at runtime. `CURATED_EXTERNAL` existed in the schema since Roadmap #15 but had zero units until this phase. Three candidates were researched against primary/authoritative sources only (official Cypress docs, official GitHub Actions docs, MDN); **two were accepted, one was rejected** - accuracy took priority over reaching a target corpus size, per this roadmap item's own explicit constraint.
 
 Accepted:
 
@@ -438,7 +497,44 @@ Rejected: `cross-browser-engine-differences-caution` - no primary/authoritative 
 
 The production corpus is now **6 units** (4 `CURATED_INTERNAL`/`PROJECT_VERIFIED` from Roadmap #15/#16D.1, 2 `CURATED_EXTERNAL` from this phase). Both new units carry `priority: 4`, deliberately below every existing `CURATED_INTERNAL` (5, 8) and the `PROJECT_VERIFIED` unit (10) - external authority does not outrank project-specific or internally-curated guidance in selector tie-breaks. Both were collision-checked with the real production selector against K1/K3/K4/K5-shaped contexts: none of the four existing frozen selections changed, and K5's true-zero-knowledge context still selects exactly `[]`. Dataset v5/Baseline v5 remain byte-for-byte unmodified and all `v1`-`v5` evaluations remain `UNCHANGED` - Dataset v5's knowledge scoring compares recorded (frozen) `actualSelectedUnitIds` values captured at live-experiment time, never re-invokes the real selector/corpus, so corpus growth structurally cannot affect it. Knowledge remains **guidance only, never current-run evidence**: both new units reach the model exactly like every existing one, as a bare `{id, statement}` pair - `sourceType`/`source`/`verifiedAt`/`priority`/`tags` are never transmitted - so no new live-model validation was required; the existing K1/K3/K4 live evidence for the shared guidance-only transport contract already covers this. No production code (`selector.js`/`loader.js`/`schema.js`/`qa-agent-prompt.js`/`analyze-failure.js`/`agent-policy.js`) was modified, and no runtime network call of any kind was introduced - source URLs are stored as plain text only.
 
+### Provider / Model Abstraction (Roadmap #18)
+
+**Status: COMPLETE WITH DOCUMENTED LIMITATIONS.** Proves the existing provider abstraction (Roadmap #18.1's audit found it already provider-neutral, a legacy of an earlier undocumented GitHub Models → provider-neutral → Groq migration) generalizes to a second, structurally different real vendor, and adds transport-level observability.
+
+**Provider contract**, unchanged from what Groq already implemented:
+
+```js
+provider.analyze({ systemPrompt, userPrompt }) → Promise<string>
+```
+
+**Transport distinctiveness, by design.** `GroqProvider` calls Groq's OpenAI-compatible Chat Completions API (`POST /openai/v1/chat/completions`, `Authorization: Bearer` header, `messages: [{role, content}]`). `GeminiProvider` calls Google's native `generateContent` REST API (`POST /v1beta/models/{model}:generateContent`, `x-goog-api-key` header, a `systemInstruction`/`contents` request shape, and multi-part response text joined with empty-string concatenation - the only lossless strategy for Gemini's part-array envelope). Both are implemented as direct HTTP calls over `fetch`, not through an official vendor SDK, so retry ownership stays entirely inside this project's own `runProviderAnalysis()` rather than an SDK's own internal retry behavior. Both map their HTTP/network failures onto the exact same shared, provider-neutral `ProviderError` vocabulary (`AUTH`/`RATE_LIMIT`/`TIMEOUT`/`NETWORK`/`INVALID_RESPONSE`/`CONFIGURATION`/`UNKNOWN`) - `analyze-failure.js` cannot tell which vendor it's talking to from the error shape alone.
+
+**Provider provenance (Roadmap #18.3).** Every analysis now records `analysis.providerAttempts` (the 1-based attempt count `runProviderAnalysis()` reached) and `analysis.firstAttemptError` (a safe summary of the *first* attempt's failure, if any, distinct from whatever ultimately succeeded or failed on the last attempt) in `ai-report.json`. Persisted error messages are never a provider's raw error/SDK text - `summarizeProviderError()` looks the message up from a fixed, pre-approved `SAFE_PROVIDER_ERROR_MESSAGES` allowlist keyed only by the generic error code, so a future provider's verbose exception text (which could embed request/response detail) can never reach a committed artifact.
+
+**Three distinct retry-adjacent concepts, kept separate on purpose:** (1) `runProviderAnalysis()`'s own bounded transport retry (up to 3 attempts, `retryable`-gated) happens *inside* one logical analysis - it is not a second AI call; (2) a QA result's own `shouldRetry` field is the model's *recommendation* about whether the Cypress test itself should be re-run, unrelated to provider transport; (3) malformed-JSON model output is a validation failure, not a transport failure, and is **not** retried by `runProviderAnalysis()`.
+
+**Gemini validation status - what is and is not established.** A single controlled live Gemini API call (Roadmap #18.9) is reported to have exercised the real endpoint end-to-end and returned a well-formed result: `classification: TEST_BUG`, `analysis.providerAttempts: 1`, `analysis.firstAttemptError: null`, and - after the application policy layer ran (see [Application action policy](#application-action-policy) above for these exact field names) - `policy.originalShouldCreateBug: false`, final `shouldCreateBug: false`, `policy.adjusted: false`. This is a real-API-compatibility signal, not a weaker result than Groq's own occasional policy-adjusted cases - it demonstrates the adapter's request/response handling works against the live API on a clean run. It does **not**, on its own, establish production-grade reliability: this was one observation, left no CI/repository trace by design (the same disposable-experiment pattern used throughout this project's controlled validations), and was not independently re-run as part of this review. **"Real API compatibility proven" (yes) is explicitly distinct from "production validation proven" (no).** Gemini has never been exercised by CI, has no repository secret, has no availability/SLO/cost/rate-limit history, and has not been evaluated for privacy/compliance fit - all deferred, open questions for Roadmap #20, not claims this phase makes.
+
+Config (no real keys - see [Local development](#qa-agent-ai-failure-analysis) above for the full example blocks):
+
+```
+AI_PROVIDER=groq    AI_MODEL=openai/gpt-oss-120b     AI_API_KEY=<groq key>
+AI_PROVIDER=gemini  AI_MODEL=gemini-3.6-flash        AI_API_KEY=<gemini key>
+```
+
+**Verified at Roadmap #18 completion:** 918 unit tests passing (0 failing), including 93 provider-layer tests broken out as 27 Gemini / 17 Groq / 14 Mock / remainder shared contract-and-factory tests; Dataset/Baseline v1-v5 and all `eval:*`/`eval:regression:*` results unchanged by this roadmap item - provider work is orthogonal to evaluation content. No production prompt, policy, knowledge, Cypress, or CI workflow file was modified by this roadmap item beyond what is documented above.
+
 ### Roadmap
+
+| Roadmap item | Status |
+|---|---|
+| #1-#14 | COMPLETE - core triage pipeline, evaluation Dataset v1-v4, correlation, evidence-grounding, Firefox matrix |
+| #15 - Knowledge Layer foundation | COMPLETE |
+| #16 (incl. #16B-#16E.5) - Production knowledge integration, live validation, Dataset v5 | COMPLETE |
+| #17 - Curated external knowledge | COMPLETE |
+| #18 - Provider / model abstraction (Gemini) | COMPLETE WITH DOCUMENTED LIMITATIONS |
+| #19 - Project / framework portability | NEXT |
+| #20 - Production hardening (reliability, cost, secret governance) | PLANNED |
 
 **Done:**
 
@@ -463,19 +559,20 @@ The production corpus is now **6 units** (4 `CURATED_INTERNAL`/`PROJECT_VERIFIED
 - QA Knowledge / Skills Layer Foundation (Roadmap #15) - see [above](#qa-knowledge--skills-layer-foundation-roadmap-15); status: **implemented / ready for review** - atomic, schema-validated knowledge units (`scripts/ai/knowledge/`), a loader, and a deterministic, zero-provider-call offline selector, plus 4 curated initial units; knowledge is guidance only and cannot override evidence/browserCorrelation/history/policy; production prompt wiring is deliberately absent, no external knowledge exists yet, Dataset/Baseline v1-v4 unmodified
 - Production Knowledge Integration (Roadmap #16) - see [above](#production-knowledge-integration-roadmap-16); status: **implemented / ready for review** - `relevantKnowledge` is now selected deterministically/offline and passed into the real production prompt under a new rule 12 guidance-only authority contract; two overly-broad curated tags were corrected (Roadmap #16B/#16B.1) so timeout/retry guidance no longer fires on unrelated failures; the exact knowledge a given analysis received is now persisted in `ai-report.json`'s `sourceContext.relevantKnowledge` for reproducibility; single-call architecture and all evidence/correlation/history/policy authority boundaries are preserved; no external knowledge, no Dataset v5/Baseline v5, and no live-model validation of knowledge-assisted behavior yet
 - Controlled Live Knowledge Validation (Roadmap #16D) - see [above](#controlled-live-knowledge-validation-roadmap-16d); status: **first evidence series complete** - five controlled, live Groq-backed observations (K1/K2/K3/K4/K5) validating knowledge-authority invariants end-to-end, each a disposable branch/PR closed without merge; zero production/knowledge/selector/prompt/policy/workflow files modified; two optional strengthening repeats (R1/R2) identified but not run
-- Dataset v5 / Baseline v5 (Roadmap #16E) - see [above](#dataset-v5--baseline-v5-roadmap-16e); status: **merged - final evidence lock not yet finalized** - additive Dataset v5 (Dataset v4's 9 samples + K1/K3/K4/K5, 13 scorable), K2 preserved as a structurally separate, non-scorable historical observation, 15 protected regression dimensions (10 inherited + `knowledgeSelectionCorrect`/`knowledgeUsage`/`knowledgeGrounding`/`modelShouldCreateBugCorrect`/`inferenceQuality`), Baseline v5 static and honestly frozen (K1/K3 known weaknesses preserved, not normalized to pass); `eval:ai:v5`/`eval:regression:v5` now run explicitly in `QA Agent evaluation` CI (Roadmap #16E.5); R1/R2 still pending
+- Dataset v5 / Baseline v5 (Roadmap #16E) - see [above](#dataset-v5--baseline-v5-roadmap-16e); status: **merged, evidence lock finalized** - additive Dataset v5 (Dataset v4's 9 samples + K1/K3/K4/K5, 13 scorable), K2 preserved as a structurally separate, non-scorable historical observation, 15 protected regression dimensions (10 inherited + `knowledgeSelectionCorrect`/`knowledgeUsage`/`knowledgeGrounding`/`modelShouldCreateBugCorrect`/`inferenceQuality`), Baseline v5 static and honestly frozen (K1/K3 known weaknesses preserved, not normalized to pass); `eval:ai:v5`/`eval:regression:v5` now run explicitly in `QA Agent evaluation` CI (Roadmap #16E.5); final decision was to finalize without running the two optional R1/R2 strengthening repeats - see [above](#dataset-v5--baseline-v5-roadmap-16e) for why
 - Explicit QA Agent evaluation CI rollout, v1-v5 (Roadmap #16E.5) - the `QA Agent evaluation` job previously ran only `v1`/`v2` explicitly, the same pre-existing gap `v3`/`v4` had also carried since their own implementation; it now explicitly runs all five evaluation/regression pairs (`eval:ai`/`eval:regression` through `eval:ai:v5`/`eval:regression:v5`) as ten sequential, non-`continue-on-error` steps in the same job - a regression on any version now fails the job's exit code the same way a regression on v1/v2 already did. Workflow-only change: no evaluation semantics, dataset/baseline content, production AI behavior, or Cypress code modified; job name, triggers, permissions, and branch-protection requirements are unchanged, and `QA Agent evaluation` remains non-required
-- Curated External Knowledge (Roadmap #17) - see [above](#curated-external-knowledge-roadmap-17); status: **first units added, local, pre-review** - 2 of 3 researched candidates accepted after primary-source verification (`framework-cypress-command-retry-ability-scope`, `ci-job-isolation-runner-state`), 1 rejected for insufficient source support (`cross-browser-engine-differences-caution`); production corpus now 6 units (2 `CURATED_EXTERNAL`); collision-checked clean against K1/K3/K4/K5 with the real selector, K5 still selects `[]`; Dataset v5/Baseline v5 and all v1-v5 evaluations unchanged; no production code, prompt, workflow, or Cypress files modified; no runtime network calls; no live AI experiment required or run
+- Curated External Knowledge (Roadmap #17) - see [above](#curated-external-knowledge-roadmap-17); status: **complete, merged** - 2 of 3 researched candidates accepted after primary-source verification (`framework-cypress-command-retry-ability-scope`, `ci-job-isolation-runner-state`), 1 rejected for insufficient source support (`cross-browser-engine-differences-caution`); production corpus now 6 units (2 `CURATED_EXTERNAL`); collision-checked clean against K1/K3/K4/K5 with the real selector, K5 still selects `[]`; Dataset v5/Baseline v5 and all v1-v5 evaluations unchanged; no production code, prompt, workflow, or Cypress files modified; no runtime network calls; no live AI experiment required or run
+- Provider / Model Abstraction (Roadmap #18) - see [above](#provider--model-abstraction-roadmap-18); status: **complete with documented limitations** - proved the pre-existing provider abstraction generalizes to a second, structurally different real vendor (`GeminiProvider`, native `generateContent` REST API, no SDK); added provider provenance (`providerAttempts`/`firstAttemptError`) with a fixed, provider-neutral safe-message allowlist so no raw provider/SDK text is ever persisted; real-API compatibility is demonstrated by one reported live call, but production reliability, availability, cost, and secret governance for Gemini remain open, deferred to Roadmap #20; Gemini is not wired into CI and has no repository secret; 918 unit tests passing (93 provider tests: 27 Gemini / 17 Groq / 14 Mock / shared contract-and-factory), Dataset/Baseline v1-v5 unchanged
 
 **Next:**
 
-- Curated External Knowledge Integration (Roadmap #17)
+- Project / Framework Portability (Roadmap #19)
 
 **Planned / future work** (not implemented yet):
 
 - Controlled Correlation Re-validation (Roadmap #8, Phases 2-3) - reproduce a same-signature and a different-signature multi-browser failure against the improved prompt with real Groq calls, compare against the historical Baseline v2 findings, and only then update Dataset v2/Baseline v2 with real evidence (target: move `correlationReasoning` from `partial` to `pass` on Scenario A/B without regressing classification/action safety anywhere else) - still outstanding, not superseded by Roadmap #13
 - Cross-run failure fingerprinting (this PR's correlation is scoped to a single workflow run only)
-- Portability / reusable QA Agent architecture - extracting the QA Agent into a package/workflow other test-automation repositories (not just Targomo) can adopt
+- Portability / reusable QA Agent architecture (Roadmap #19, next) - extracting the QA Agent into a package/workflow other test-automation repositories (not just Targomo) can adopt
 - Playwright adapter/integration
 - API testing integration
 - Database/data-layer testing integration
@@ -483,5 +580,6 @@ The production corpus is now **6 units** (4 `CURATED_INTERNAL`/`PROJECT_VERIFIED
 - Confidence-based policy refinements
 - Structured provider output-schema improvements
 - Human-approved action flow / automatic GitHub Issue creation from `shouldCreateBug`
-- Model/provider comparison, fallback provider
+- Fallback provider (automatic multi-provider execution) - explicitly not implemented; today's provider selection is single, static, and manual (Roadmap #18)
 - Human feedback loop into evaluation
+- Production hardening for real providers (Roadmap #20, planned) - CI-wiring a second provider, reliability/availability/SLO observation over time, cost and secret governance, privacy/compliance review - none of this is established for Gemini yet (see [Provider / Model Abstraction](#provider--model-abstraction-roadmap-18) above)
