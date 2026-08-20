@@ -5,7 +5,7 @@
   "source": null,
   "verifiedAt": "2026-08-18",
   "tags": ["retry", "retry-ability", "timeout"],
-  "appliesTo": { "browsers": null, "frameworks": ["cypress"] },
+  "appliesTo": { "browsers": null, "frameworks": ["cypress"], "projects": null },
   "statement": "Cypress automatically retries retryable queries and assertions until they pass or a configured timeout elapses. A timeout failure therefore establishes that the expected condition did not become true within that retry window - it does not by itself establish why the condition never became true, and that mechanism should be determined from the specific evidence available.",
   "priority": 5
 }

@@ -63,6 +63,20 @@ function getRelevantFrameworks(context) {
   return context && Array.isArray(context.frameworks) ? context.frameworks : DEFAULT_FRAMEWORKS;
 }
 
+// The current analysis's stable project identity (Roadmap #19.2's
+// ProjectProfile.id, carried through as context.metadata.projectId) -
+// read directly off context, never imported from project-profile.js and
+// never defaulted to this repository's production id: this module stays
+// project-neutral, exactly like it is already framework-neutral (no
+// project literal appears anywhere in this file). A missing, non-string,
+// or whitespace-only value returns null ("no known current project"),
+// the same fail-closed signal a genuinely absent field would produce -
+// it is never guessed from browser, framework, hostname, or repository.
+function getRelevantProjectId(context) {
+  const projectId = context && context.metadata && context.metadata.projectId;
+  return typeof projectId === "string" && projectId.trim().length > 0 ? projectId : null;
+}
+
 // Deterministic, fixed-order concatenation of every pre-call signal this
 // selector is allowed to use (see Phase 7/8). Ordering is fixed by this
 // function's own source, not by object/array enumeration of anything
@@ -118,13 +132,27 @@ function intersects(a, b) {
   return a.some((v) => set.has(v));
 }
 
-// Structural gate (Phase 10): appliesTo.browsers/frameworks scope
-// eligibility, they never contribute to ranking. A null field imposes no
-// restriction; a non-null field requires the current context to actually
-// intersect it - the current context must satisfy the unit's own scoping,
-// never the other way around (see Phase 16.C).
-function isEligible(unit, relevantBrowsers, relevantFrameworks) {
+// Structural gate (Phase 10, extended by Roadmap #19.3B): appliesTo.
+// browsers/frameworks/projects scope eligibility, they never contribute
+// to ranking. A null field imposes no restriction; a non-null field
+// requires the current context to actually satisfy it - the current
+// context must satisfy the unit's own scoping, never the other way
+// around (see Phase 16.C).
+//
+// Project scoping (appliesTo.projects) is a single-value membership
+// check, not a set intersection like browsers/frameworks: a unit belongs
+// to one or more named projects, and the CURRENT analysis has at most one
+// current project, so eligibility is "is the current project one of the
+// unit's projects", not "do two sets overlap". A unit with a non-null
+// appliesTo.projects is excluded whenever the current project is unknown
+// (currentProjectId === null) - fail-closed, so a missing projectId can
+// never make project-specific knowledge appear global. A null
+// appliesTo.projects is unaffected either way (project-orthogonal).
+function isEligible(unit, relevantBrowsers, relevantFrameworks, currentProjectId) {
   const appliesTo = unit.appliesTo || {};
+  if (Array.isArray(appliesTo.projects) && (!currentProjectId || !appliesTo.projects.includes(currentProjectId))) {
+    return false;
+  }
   if (Array.isArray(appliesTo.browsers) && !intersects(appliesTo.browsers, relevantBrowsers)) return false;
   if (Array.isArray(appliesTo.frameworks) && !intersects(appliesTo.frameworks, relevantFrameworks)) return false;
   return true;
@@ -172,10 +200,11 @@ function selectKnowledge(context, units, options = {}) {
 
   const relevantBrowsers = getRelevantBrowsers(context);
   const relevantFrameworks = getRelevantFrameworks(context);
+  const currentProjectId = getRelevantProjectId(context);
   const signalText = buildSignalText(context);
 
   const candidates = (units || [])
-    .filter((unit) => isEligible(unit, relevantBrowsers, relevantFrameworks))
+    .filter((unit) => isEligible(unit, relevantBrowsers, relevantFrameworks, currentProjectId))
     .map((unit) => ({ unit, score: computeMatchScore(unit, signalText) }))
     .filter((candidate) => candidate.score > 0)
     .sort(compareCandidates);
@@ -201,6 +230,7 @@ module.exports = {
   buildSignalText,
   getRelevantBrowsers,
   getRelevantFrameworks,
+  getRelevantProjectId,
   DEFAULT_MAX_UNITS,
   DEFAULT_MAX_CHARS,
 };

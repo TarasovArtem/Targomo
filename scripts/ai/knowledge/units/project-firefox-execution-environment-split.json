@@ -5,7 +5,7 @@
   "source": null,
   "verifiedAt": "2026-08-18",
   "tags": ["firefox"],
-  "appliesTo": { "browsers": ["firefox"], "frameworks": ["cypress"] },
+  "appliesTo": { "browsers": ["firefox"], "frameworks": ["cypress"], "projects": ["external-poi-sut"] },
   "statement": "In this project, Firefox executes directly on the bare CI runner while Chrome and Edge run inside a containerized environment. This is an infrastructure/execution-environment difference, not evidence of a Firefox-specific product defect - a Firefox failure should be interpreted using the same evidence standard as any other browser, not assumed to stem from this environment split.",
   "priority": 10
 }

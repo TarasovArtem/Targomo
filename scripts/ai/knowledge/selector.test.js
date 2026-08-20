@@ -3,7 +3,13 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { selectKnowledge, buildSignalText, getRelevantBrowsers, getRelevantFrameworks } = require("./selector");
+const {
+  selectKnowledge,
+  buildSignalText,
+  getRelevantBrowsers,
+  getRelevantFrameworks,
+  getRelevantProjectId,
+} = require("./selector");
 const { loadKnowledgeUnits } = require("./loader");
 
 // --- fixtures (independent of the real scripts/ai/knowledge/units/*.json
@@ -19,7 +25,7 @@ function makeUnit(overrides = {}) {
     source: null,
     verifiedAt: "2026-08-18",
     tags: ["fixture-tag"],
-    appliesTo: { browsers: null, frameworks: null },
+    appliesTo: { browsers: null, frameworks: null, projects: null },
     statement: "A fixture statement used for selector testing.",
     priority: 1,
     ...overrides,
@@ -31,7 +37,7 @@ const firefoxUnit = makeUnit({
   category: "PROJECT",
   sourceType: "PROJECT_VERIFIED",
   tags: ["firefox"],
-  appliesTo: { browsers: ["firefox"], frameworks: ["cypress"] },
+  appliesTo: { browsers: ["firefox"], frameworks: ["cypress"], projects: ["external-poi-sut"] },
   statement: "Firefox runs in a different execution environment in this project; that split alone is not evidence of a Firefox-specific defect.",
   priority: 10,
 });
@@ -39,7 +45,7 @@ const firefoxUnit = makeUnit({
 const chromeOnlyUnit = makeUnit({
   id: "chrome-only-fixture",
   tags: ["chrome-only-quirk"],
-  appliesTo: { browsers: ["chrome"], frameworks: ["cypress"] },
+  appliesTo: { browsers: ["chrome"], frameworks: ["cypress"], projects: null },
   statement: "A chrome-only fixture statement.",
   priority: 9,
 });
@@ -48,7 +54,7 @@ const crossBrowserUnit = makeUnit({
   id: "cross-browser-differing-signature-caution",
   category: "CROSS_BROWSER",
   tags: ["browserCorrelation", "sameFailureSignature", "cross-browser", "signature"],
-  appliesTo: { browsers: null, frameworks: ["cypress"] },
+  appliesTo: { browsers: null, frameworks: ["cypress"], projects: null },
   statement: "Differing signatures across browsers can indicate different failure paths but do not prove a browser-specific cause.",
   priority: 8,
 });
@@ -56,7 +62,7 @@ const crossBrowserUnit = makeUnit({
 const timeoutUnit = makeUnit({
   id: "qa-timeout-error-multiple-causes",
   tags: ["timed out retrying", "timeout", "cy.get", "assertion"],
-  appliesTo: { browsers: null, frameworks: ["cypress"] },
+  appliesTo: { browsers: null, frameworks: ["cypress"], projects: null },
   statement: "A timeout error can arise from several distinct mechanisms; the timeout text alone does not establish which one occurred.",
   priority: 5,
 });
@@ -65,7 +71,7 @@ const frameworkUnit = makeUnit({
   id: "framework-cypress-retry-timeout-semantics",
   category: "FRAMEWORK",
   tags: ["cypress", "retry", "retry-ability"],
-  appliesTo: { browsers: null, frameworks: ["cypress"] },
+  appliesTo: { browsers: null, frameworks: ["cypress"], projects: null },
   statement: "Cypress retries retryable assertions until timeout; a timeout establishes the condition never became true in time, not why.",
   priority: 5,
 });
@@ -73,7 +79,7 @@ const frameworkUnit = makeUnit({
 const irrelevantHighPriorityUnit = makeUnit({
   id: "irrelevant-network-unit",
   tags: ["network outage", "dns failure", "connection reset"],
-  appliesTo: { browsers: null, frameworks: null },
+  appliesTo: { browsers: null, frameworks: null, projects: null },
   statement: "A totally unrelated network-outage statement.",
   priority: 999,
 });
@@ -169,7 +175,7 @@ test("id tie-break: equal score and equal priority sorts by id ascending", () =>
 
 test("browser appliesTo filtering: Firefox unit selected for a relevant Firefox context", () => {
   const context = makeContext({
-    metadata: { browser: "firefox", ci: true },
+    metadata: { browser: "firefox", ci: true, projectId: "external-poi-sut" },
     browserCorrelation: {
       browsers: ["chrome", "edge", "firefox"],
       failedBrowsers: ["firefox"],
@@ -195,7 +201,7 @@ test("browser appliesTo filtering excludes a unit even when its tags DO match (s
   const firefoxScopedGenericUnit = makeUnit({
     id: "firefox-scoped-generic-timeout-unit",
     tags: ["timed out retrying"],
-    appliesTo: { browsers: ["firefox"], frameworks: ["cypress"] },
+    appliesTo: { browsers: ["firefox"], frameworks: ["cypress"], projects: null },
   });
   const context = makeContext({ metadata: { browser: "chrome" }, failedTests: [timeoutFailedTest()] });
   const result = selectKnowledge(context, [firefoxScopedGenericUnit]);
@@ -229,11 +235,192 @@ test("framework appliesTo filtering: a unit scoped to an unrelated framework is 
   const playwrightOnlyUnit = makeUnit({
     id: "playwright-only-fixture",
     tags: ["timed out retrying"],
-    appliesTo: { browsers: null, frameworks: ["playwright"] },
+    appliesTo: { browsers: null, frameworks: ["playwright"], projects: null },
   });
   const context = makeContext({ failedTests: [timeoutFailedTest()] });
   const result = selectKnowledge(context, [playwrightOnlyUnit]);
   assert.deepEqual(result, []);
+});
+
+// --- Roadmap #19.3B: project scoping --------------------------------------
+
+test("getRelevantProjectId: returns context.metadata.projectId when it is a non-empty string", () => {
+  assert.equal(getRelevantProjectId(makeContext({ metadata: { browser: "chrome", projectId: "external-poi-sut" } })), "external-poi-sut");
+});
+
+test("getRelevantProjectId: returns null when metadata.projectId is missing/null/empty/whitespace-only/non-string", () => {
+  assert.equal(getRelevantProjectId(makeContext({ metadata: { browser: "chrome" } })), null);
+  assert.equal(getRelevantProjectId(makeContext({ metadata: { browser: "chrome", projectId: null } })), null);
+  assert.equal(getRelevantProjectId(makeContext({ metadata: { browser: "chrome", projectId: "" } })), null);
+  assert.equal(getRelevantProjectId(makeContext({ metadata: { browser: "chrome", projectId: "   " } })), null);
+  assert.equal(getRelevantProjectId(makeContext({ metadata: { browser: "chrome", projectId: 42 } })), null);
+  assert.equal(getRelevantProjectId(makeContext({})), null);
+});
+
+test("project scoping: a whitespace-only current projectId cannot make project-scoped knowledge eligible (fail-closed, not treated as a real identity)", () => {
+  const context = makeContext({ metadata: { browser: "firefox", projectId: "   " } });
+  const result = selectKnowledge(context, [firefoxUnit]);
+  assert.deepEqual(result, []);
+});
+
+test("project scoping: matching-project PROJECT_VERIFIED knowledge is eligible", () => {
+  const context = makeContext({ metadata: { browser: "firefox", projectId: "external-poi-sut" } });
+  const result = selectKnowledge(context, [firefoxUnit]);
+  assert.deepEqual(result.map((r) => r.id), ["project-firefox-execution-environment-split"]);
+});
+
+test("project scoping: different-project PROJECT_VERIFIED knowledge is excluded (primary cross-project leakage regression proof)", () => {
+  const context = makeContext({ metadata: { browser: "firefox", projectId: "synthetic-project" } });
+  const result = selectKnowledge(context, [firefoxUnit]);
+  assert.deepEqual(result, []);
+});
+
+test("project scoping: missing current projectId excludes project-scoped knowledge (fail-closed)", () => {
+  const context = makeContext({ metadata: { browser: "firefox" } });
+  const result = selectKnowledge(context, [firefoxUnit]);
+  assert.deepEqual(result, []);
+});
+
+test("project scoping: missing current projectId still allows global (projects: null) knowledge", () => {
+  const context = makeContext({ failedTests: [timeoutFailedTest()] });
+  assert.equal(context.metadata.projectId, undefined);
+  const result = selectKnowledge(context, [timeoutUnit]);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].id, "qa-timeout-error-multiple-causes");
+});
+
+test("project scoping: global (projects: null) knowledge is selectable across external-poi-sut, synthetic-project, and a missing projectId alike", () => {
+  for (const projectId of ["external-poi-sut", "synthetic-project", undefined]) {
+    const metadata = projectId ? { browser: "chrome", projectId } : { browser: "chrome" };
+    const context = makeContext({ metadata, failedTests: [timeoutFailedTest()] });
+    const result = selectKnowledge(context, [timeoutUnit]);
+    assert.equal(result.length, 1, `expected global knowledge to remain eligible for projectId=${projectId}`);
+  }
+});
+
+test("project + framework orthogonality: projects:null + frameworks:['cypress'] remains usable across multiple project IDs when framework matches", () => {
+  for (const projectId of ["external-poi-sut", "synthetic-project"]) {
+    const context = makeContext({ metadata: { browser: "chrome", projectId }, failedTests: [timeoutFailedTest()] });
+    const result = selectKnowledge(context, [timeoutUnit]);
+    assert.equal(result.length, 1);
+  }
+});
+
+test("project + framework orthogonality: project-scoped + framework-scoped unit requires BOTH to match", () => {
+  const projectAndFrameworkScopedUnit = makeUnit({
+    id: "project-and-framework-scoped-fixture",
+    tags: ["fixture-tag"],
+    appliesTo: { browsers: null, frameworks: ["cypress"], projects: ["external-poi-sut"] },
+  });
+
+  // project match + framework match -> eligible
+  const bothMatch = makeContext({
+    metadata: { browser: "chrome", projectId: "external-poi-sut" },
+    knownProjectConstraints: ["fixture-tag appears here"],
+  });
+  assert.deepEqual(selectKnowledge(bothMatch, [projectAndFrameworkScopedUnit]).map((r) => r.id), [
+    "project-and-framework-scoped-fixture",
+  ]);
+
+  // project mismatch + framework match -> excluded
+  const projectMismatch = makeContext({
+    metadata: { browser: "chrome", projectId: "synthetic-project" },
+    knownProjectConstraints: ["fixture-tag appears here"],
+  });
+  assert.deepEqual(selectKnowledge(projectMismatch, [projectAndFrameworkScopedUnit]), []);
+
+  // project match + framework mismatch -> excluded
+  const frameworkMismatch = makeContext({
+    metadata: { browser: "chrome", projectId: "external-poi-sut" },
+    knownProjectConstraints: ["fixture-tag appears here"],
+    frameworks: ["playwright"],
+  });
+  assert.deepEqual(selectKnowledge(frameworkMismatch, [projectAndFrameworkScopedUnit]), []);
+});
+
+test("project scoping: a multi-project appliesTo.projects array is eligible for every listed project id", () => {
+  const multiProjectUnit = makeUnit({
+    id: "multi-project-fixture",
+    tags: ["fixture-tag"],
+    appliesTo: { browsers: null, frameworks: null, projects: ["external-poi-sut", "synthetic-project"] },
+  });
+  for (const projectId of ["external-poi-sut", "synthetic-project"]) {
+    const context = makeContext({
+      metadata: { browser: "chrome", projectId },
+      knownProjectConstraints: ["fixture-tag appears here"],
+    });
+    assert.deepEqual(selectKnowledge(context, [multiProjectUnit]).map((r) => r.id), ["multi-project-fixture"]);
+  }
+});
+
+test("project scoping: an unknown-but-syntactically-valid project id is never eligible for the current production project (no global registry involved)", () => {
+  const futureProjectUnit = makeUnit({
+    id: "future-project-fixture",
+    tags: ["fixture-tag"],
+    appliesTo: { browsers: null, frameworks: null, projects: ["future-project"] },
+  });
+  const context = makeContext({
+    metadata: { browser: "chrome", projectId: "external-poi-sut" },
+    knownProjectConstraints: ["fixture-tag appears here"],
+  });
+  assert.deepEqual(selectKnowledge(context, [futureProjectUnit]), []);
+});
+
+test("project scoping: filtering ineligible candidates does not reorder surviving candidates (score/priority/id ordering unchanged)", () => {
+  const globalHigh = makeUnit({
+    id: "global-high-priority",
+    tags: ["shared-tag"],
+    appliesTo: { browsers: null, frameworks: null, projects: null },
+    priority: 10,
+  });
+  const sameProjectMid = makeUnit({
+    id: "same-project-mid-priority",
+    tags: ["shared-tag"],
+    appliesTo: { browsers: null, frameworks: null, projects: ["external-poi-sut"] },
+    priority: 5,
+  });
+  const otherProjectExcluded = makeUnit({
+    id: "other-project-excluded",
+    tags: ["shared-tag"],
+    appliesTo: { browsers: null, frameworks: null, projects: ["synthetic-project"] },
+    priority: 999, // deliberately highest priority - must still be excluded, never reordering survivors
+  });
+  const globalLow = makeUnit({
+    id: "global-low-priority",
+    tags: ["shared-tag"],
+    appliesTo: { browsers: null, frameworks: null, projects: null },
+    priority: 1,
+  });
+
+  const context = makeContext({
+    metadata: { browser: "chrome", projectId: "external-poi-sut" },
+    knownProjectConstraints: ["shared-tag appears here"],
+  });
+  const result = selectKnowledge(context, [otherProjectExcluded, globalLow, sameProjectMid, globalHigh]);
+
+  assert.deepEqual(result.map((r) => r.id), ["global-high-priority", "same-project-mid-priority", "global-low-priority"]);
+});
+
+test("project scoping: current real PROJECT_VERIFIED unit remains eligible for external-poi-sut under the same browser/framework/tag circumstances as before", () => {
+  const context = makeContext({
+    metadata: { browser: "firefox", projectId: "external-poi-sut" },
+    failedTests: [{ title: "renders map", specFile: "cypress/e2e/tests/map.cy.js", error: { message: "AssertionError: expected element to exist", stack: null } }],
+    knownProjectConstraints: [
+      "Firefox runs in this CI workflow (Roadmap #14C) in a different execution environment from Chrome/Edge: Chrome and Edge run inside a cypress/included Docker container, while Firefox runs directly on the bare GitHub Actions runner with Firefox installed explicitly. This split exists because Firefox previously hung during WebDriver session creation when run inside that same nested container - an infrastructure/sandboxing limitation of that specific setup, not evidence of a browser-specific product bug or test defect.",
+    ],
+  });
+  assert.deepEqual(realSelectedIds(context), ["project-firefox-execution-environment-split"]);
+});
+
+test("project scoping: synthetic-project cannot receive the real PROJECT_VERIFIED unit under otherwise identical browser/framework/tag conditions - CROSS_PROJECT_KNOWLEDGE_LEAKAGE=BLOCKED", () => {
+  const context = makeContext({
+    metadata: { browser: "firefox", projectId: "synthetic-project" },
+    failedTests: [{ title: "renders map", specFile: "cypress/e2e/tests/map.cy.js", error: { message: "AssertionError: expected element to exist", stack: null } }],
+    knownProjectConstraints: [
+      "Firefox runs in this CI workflow (Roadmap #14C) in a different execution environment from Chrome/Edge: Chrome and Edge run inside a cypress/included Docker container, while Firefox runs directly on the bare GitHub Actions runner with Firefox installed explicitly. This split exists because Firefox previously hung during WebDriver session creation when run inside that same nested container - an infrastructure/sandboxing limitation of that specific setup, not evidence of a browser-specific product bug or test defect.",
+    ],
+  });
+  assert.deepEqual(realSelectedIds(context), []);
 });
 
 // --- 10-11: budget -------------------------------------------------------
@@ -728,7 +915,7 @@ test("#16D.1: statement/appliesTo/priority/category/id are unchanged by the tag 
   const crossBrowserUnitReal = realUnits.find((u) => u.id === "cross-browser-differing-signature-caution");
   assert.equal(crossBrowserUnitReal.category, "CROSS_BROWSER");
   assert.equal(crossBrowserUnitReal.priority, 8);
-  assert.deepEqual(crossBrowserUnitReal.appliesTo, { browsers: null, frameworks: ["cypress"] });
+  assert.deepEqual(crossBrowserUnitReal.appliesTo, { browsers: null, frameworks: ["cypress"], projects: null });
   assert.match(crossBrowserUnitReal.statement, /differing failure signatures/);
 });
 
@@ -875,7 +1062,7 @@ test("#17.2: K1/K3/K4-shaped collision check - existing selection behavior for g
 
   // K4-shaped: single Firefox failure, project knowledge stays the sole/dominant match.
   const k4 = makeContext({
-    metadata: { browser: "firefox" },
+    metadata: { browser: "firefox", projectId: "external-poi-sut" },
     failedTests: [{ title: "renders map", specFile: "cypress/e2e/tests/map.cy.js", error: { message: "AssertionError: expected element to exist", stack: null } }],
     knownProjectConstraints: [
       "Firefox runs in this CI workflow (Roadmap #14C) in a different execution environment from Chrome/Edge: Chrome and Edge run inside a cypress/included Docker container, while Firefox runs directly on the bare GitHub Actions runner with Firefox installed explicitly. This split exists because Firefox previously hung during WebDriver session creation when run inside that same nested container - an infrastructure/sandboxing limitation of that specific setup, not evidence of a browser-specific product bug or test defect.",

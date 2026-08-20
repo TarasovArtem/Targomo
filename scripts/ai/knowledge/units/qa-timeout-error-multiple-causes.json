@@ -5,7 +5,7 @@
   "source": null,
   "verifiedAt": "2026-08-18",
   "tags": ["timed out retrying", "timeout", "cy.get"],
-  "appliesTo": { "browsers": null, "frameworks": ["cypress"] },
+  "appliesTo": { "browsers": null, "frameworks": ["cypress"], "projects": null },
   "statement": "A 'Timed out retrying' error can arise from several distinct mechanisms - an incorrect or stale selector, an assertion made before application state has settled, a genuine synchronization gap, or an assertion that encodes an incorrect expectation. The presence of timeout text alone establishes that a retried condition did not become true in time; it does not by itself establish which of these mechanisms occurred.",
   "priority": 5
 }
