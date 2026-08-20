@@ -29,9 +29,17 @@
 
 const fs = require("fs");
 const path = require("path");
+const { TARGOMO_PROJECT_PROFILE } = require("./project-profile");
 
 const ROOT = path.resolve(__dirname, "..", "..");
 const OUTPUT_FILE = path.join(ROOT, "reports", "ai", "history.json");
+
+// This repository's single production project (see
+// scripts/ai/project-profile.js, Roadmap #19.2/#19.3C). Stable project
+// identity is owned by that module, not here - this file only consumes
+// it, so the aggregate can be scoped to the project it was actually
+// collected for without ever hardcoding that project's id here.
+const PROJECT_PROFILE = TARGOMO_PROJECT_PROFILE;
 
 // This script is specific to this repo's single workflow file, matching
 // how other scripts/ai/*.js already hardcode repo-specific details (spec
@@ -200,6 +208,13 @@ async function main() {
 
   const history = {
     available: true,
+    // Stable project identity (Roadmap #19.3C) - the project this
+    // aggregate was actually collected for, so a consumer analyzing a
+    // different (or unknown) current project can refuse to trust it
+    // rather than silently treating it as universally applicable. See
+    // scripts/ai/project-profile.js for the single source of truth this
+    // value is read from.
+    projectId: PROJECT_PROFILE.id,
     browser,
     branch,
     runsConsidered: inspected,
@@ -230,4 +245,5 @@ module.exports = {
   DEFAULT_RUNS,
   DEFAULT_BRANCH,
   MAX_RUNS,
+  PROJECT_PROFILE,
 };

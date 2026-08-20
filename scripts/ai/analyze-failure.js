@@ -68,12 +68,57 @@ function readContext() {
   }
 }
 
+// Roadmap #19.3C: classifies one property's presence/well-formedness
+// rather than collapsing every "bad" value into one ambiguous bucket. A
+// property that was never set at all (ABSENT - e.g. a legacy context or
+// History object that predates project identity) is a fundamentally
+// different, more permissive signal than a property that IS set but
+// broken (INVALID - null, "", whitespace-only, or non-string): the
+// former may fall back to narrow legacy compatibility (see
+// isHistoryProjectEligible below), the latter never does. VALID's value
+// is the trimmed string, so comparisons use normalized identity, never
+// raw incidental whitespace.
+function classifyProjectId(object, key) {
+  const hasProperty = Boolean(object) && Object.prototype.hasOwnProperty.call(object, key);
+  if (!hasProperty) return { state: "ABSENT", value: null };
+
+  const raw = object[key];
+  if (typeof raw !== "string" || raw.trim().length === 0) return { state: "INVALID", value: null };
+
+  return { state: "VALID", value: raw.trim() };
+}
+
+// Roadmap #19.3C: whether History collected for one project may be used
+// while analyzing another. Two VALID identities must match exactly (by
+// trimmed value); ABSENT+ABSENT is the one narrow legacy-compatibility
+// case (both sides genuinely predate project identity - never true for
+// real collector/collect-history.js output, which have unconditionally
+// emitted projectId since Roadmap #19.2/#19.3C respectively, so this
+// case cannot occur in real production traffic). Every other
+// combination - a mismatch, either side ABSENT while the other is
+// VALID, or an INVALID value on either side - is ineligible. This is an
+// eligibility/trust gate only: it never influences classification,
+// policy, or evidence status (see qa-agent-prompt.js rule 8 and
+// scripts/ai/agent-policy.js, both untouched by this gate).
+function isHistoryProjectEligible(currentIdentity, historyIdentity) {
+  if (currentIdentity.state === "INVALID" || historyIdentity.state === "INVALID") return false;
+  if (currentIdentity.state === "VALID" && historyIdentity.state === "VALID") {
+    return currentIdentity.value === historyIdentity.value;
+  }
+  return currentIdentity.state === "ABSENT" && historyIdentity.state === "ABSENT";
+}
+
 // Optional by design (see collect-history.js): missing file, unparseable
-// JSON, or an { available: false } marker all just mean "no history" -
-// never an error. Only the compact aggregate counts are kept; internal
-// bookkeeping fields (available/reason/branch/generatedAt) aren't sent to
-// the provider.
-function readHistory() {
+// JSON, an { available: false } marker, or History collected for a
+// different/unknown project (Roadmap #19.3C) all just mean "no history"
+// - never an error. Only the compact aggregate counts are kept; internal
+// bookkeeping fields (available/reason/branch/generatedAt/projectId)
+// aren't sent to the provider. `currentMetadata` is normally the
+// context.metadata this analysis is running against, passed in (not
+// read directly) so the project-eligibility check below can distinguish
+// a genuinely absent field from an explicit malformed one using the
+// exact same classifyProjectId() rules the History side uses.
+function readHistory(currentMetadata) {
   if (!fs.existsSync(HISTORY_FILE)) return null;
 
   let parsed;
@@ -84,6 +129,13 @@ function readHistory() {
   }
 
   if (!parsed || parsed.available !== true) return null;
+
+  // Existing structural gates (file/JSON/available) are checked first, above -
+  // a matching projectId must never rescue a missing file, a parse
+  // failure, or an available:false marker.
+  const currentIdentity = classifyProjectId(currentMetadata, "projectId");
+  const historyIdentity = classifyProjectId(parsed, "projectId");
+  if (!isHistoryProjectEligible(currentIdentity, historyIdentity)) return null;
 
   return {
     runsConsidered: parsed.runsConsidered ?? null,
@@ -346,7 +398,11 @@ async function runProviderAnalysis(
 // both default to their real implementations.
 async function buildFailureReport(
   context,
-  { provider = createProvider(), history = readHistory(), relevantKnowledge = computeRelevantKnowledge(context) } = {}
+  {
+    provider = createProvider(),
+    history = readHistory(context.metadata),
+    relevantKnowledge = computeRelevantKnowledge(context),
+  } = {}
 ) {
   const failedTests = context.failedTests || [];
   const generatedAt = new Date().toISOString();
@@ -492,6 +548,8 @@ module.exports = {
   summarizeProviderError,
   pickSourceContext,
   readHistory,
+  classifyProjectId,
+  isHistoryProjectEligible,
   computeRelevantKnowledge,
   MODEL,
 };
