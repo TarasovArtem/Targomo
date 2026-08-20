@@ -214,7 +214,7 @@ test("getMetadata: TEST_BROWSER takes priority over BROWSER/CYPRESS_BROWSER", (t
 });
 
 test("getMetadata: projectId is the stable production project identity (Roadmap #19.2)", () => {
-  assert.equal(getMetadata().projectId, "targomo-poi");
+  assert.equal(getMetadata().projectId, "external-poi-sut");
   assert.equal(getMetadata().projectId, TARGOMO_PROJECT_PROFILE.id);
 });
 

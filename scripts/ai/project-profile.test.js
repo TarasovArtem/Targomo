@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const { TARGOMO_PROJECT_PROFILE, validateProjectProfile } = require("./project-profile");
 
 test("TARGOMO_PROJECT_PROFILE: id is the stable production project identity", () => {
-  assert.equal(TARGOMO_PROJECT_PROFILE.id, "targomo-poi");
+  assert.equal(TARGOMO_PROJECT_PROFILE.id, "external-poi-sut");
 });
 
 test("TARGOMO_PROJECT_PROFILE: displayName is a non-empty string mentioning poi.targomo.com", () => {
@@ -116,6 +116,6 @@ test("validateProjectProfile: rejects a non-string entry inside knownProjectCons
 test("validateProjectProfile: rejects null/non-object input without throwing", () => {
   assert.equal(validateProjectProfile(null).valid, false);
   assert.equal(validateProjectProfile(undefined).valid, false);
-  assert.equal(validateProjectProfile("targomo-poi").valid, false);
+  assert.equal(validateProjectProfile("external-poi-sut").valid, false);
   assert.equal(validateProjectProfile([]).valid, false);
 });
