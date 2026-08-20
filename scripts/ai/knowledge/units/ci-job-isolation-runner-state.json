@@ -5,7 +5,7 @@
   "source": "GitHub Docs - About GitHub-hosted runners - https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners; GitHub Docs - Store and share data with workflow artifacts - https://docs.github.com/en/actions/using-workflows/storing-workflow-data-as-artifacts; GitHub Docs - Self-hosted runners reference - https://docs.github.com/en/actions/reference/runners/self-hosted-runners",
   "verifiedAt": "2026-08-19",
   "tags": ["job isolation", "fresh runner"],
-  "appliesTo": { "browsers": null, "frameworks": null },
+  "appliesTo": { "browsers": null, "frameworks": null, "projects": null },
   "statement": "Except for GitHub's documented single-CPU hosted-runner case, each GitHub-hosted Actions job runs on its own new, GitHub-provisioned virtual machine, so filesystem/process state from one job is not automatically visible to another - mechanisms like artifacts exist precisely to pass data across that boundary, and cross-job state carryover should not be inferred without one of those explicit mechanisms in play. This does not describe self-hosted runners, whose lifecycle and any state persistence are configured by the runner's owner rather than freshly provisioned by GitHub for each job.",
   "priority": 4
 }

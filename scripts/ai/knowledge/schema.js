@@ -41,7 +41,15 @@ const SOURCE_TYPES = ["PROJECT_VERIFIED", "CONTROLLED_EXPERIMENT", "CURATED_INTE
 // `source` null.
 const SOURCE_TYPE_REQUIRING_SOURCE = "CURATED_EXTERNAL";
 
-const APPLIES_TO_LIST_FIELDS = ["browsers", "frameworks"];
+// Only sourceType that requires a non-null `appliesTo.projects` (Roadmap
+// #19.3B) - a PROJECT_VERIFIED unit's statement is true only about a
+// specific logical project (e.g. "in this project..."), so unlike every
+// other sourceType it may never be left project-orthogonal (projects:
+// null). Every other sourceType may leave `projects` null to remain
+// globally selectable across projects.
+const SOURCE_TYPE_REQUIRING_PROJECT_SCOPE = "PROJECT_VERIFIED";
+
+const APPLIES_TO_LIST_FIELDS = ["browsers", "frameworks", "projects"];
 
 function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -135,6 +143,22 @@ function collectKnowledgeUnitErrors(unit, errors, pathPrefix) {
   }
 
   collectAppliesToErrors(unit.appliesTo, errors, path);
+
+  // Checked after the generic appliesTo pass above (which already rejects
+  // a missing/malformed/empty/duplicate `projects` array for every
+  // sourceType) - this only adds the PROJECT_VERIFIED-specific rule that
+  // an explicit `projects: null` (otherwise perfectly valid - it is how
+  // every other sourceType stays project-orthogonal) is not allowed for
+  // this one sourceType.
+  if (
+    sourceType === SOURCE_TYPE_REQUIRING_PROJECT_SCOPE &&
+    isPlainObject(unit.appliesTo) &&
+    unit.appliesTo.projects === null
+  ) {
+    errors.push(
+      `${path}.appliesTo.projects: must be a non-empty array of unique, non-empty strings when sourceType is "${SOURCE_TYPE_REQUIRING_PROJECT_SCOPE}"`
+    );
+  }
 
   if (!isNonEmptyString(unit.statement)) {
     errors.push(`${path}.statement: must be a non-empty string`);

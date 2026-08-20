@@ -13,7 +13,7 @@ function makeValidUnit(overrides = {}) {
     source: null,
     verifiedAt: "2026-08-18",
     tags: ["timed out retrying", "cy.get", "timeout"],
-    appliesTo: { browsers: null, frameworks: ["cypress"] },
+    appliesTo: { browsers: null, frameworks: ["cypress"], projects: null },
     statement: "A 'Timed out retrying' error can indicate a synchronization gap rather than a broken selector.",
     priority: 5,
   };
@@ -28,6 +28,7 @@ test("valid PROJECT_VERIFIED unit passes", () => {
     category: "PROJECT",
     sourceType: "PROJECT_VERIFIED",
     source: null,
+    appliesTo: { browsers: null, frameworks: ["cypress"], projects: ["external-poi-sut"] },
   });
   const result = validateKnowledgeUnit(unit);
   assert.deepEqual(result.errors, []);
@@ -215,44 +216,124 @@ test("malformed appliesTo (not an object) is rejected", () => {
   assert.ok(result.errors.some((e) => e.includes("appliesTo")));
 });
 
-test("appliesTo with both fields null is valid (no scoping restriction)", () => {
-  const unit = makeValidUnit({ appliesTo: { browsers: null, frameworks: null } });
+test("appliesTo with all three fields null is valid (no scoping restriction)", () => {
+  const unit = makeValidUnit({ appliesTo: { browsers: null, frameworks: null, projects: null } });
   const result = validateKnowledgeUnit(unit);
   assert.equal(result.valid, true);
 });
 
 test("appliesTo.browsers as a non-empty unique array is valid", () => {
-  const unit = makeValidUnit({ appliesTo: { browsers: ["firefox"], frameworks: null } });
+  const unit = makeValidUnit({ appliesTo: { browsers: ["firefox"], frameworks: null, projects: null } });
   const result = validateKnowledgeUnit(unit);
   assert.equal(result.valid, true);
 });
 
 test("duplicate browser entries in appliesTo.browsers are rejected", () => {
-  const unit = makeValidUnit({ appliesTo: { browsers: ["chrome", "chrome"], frameworks: null } });
+  const unit = makeValidUnit({ appliesTo: { browsers: ["chrome", "chrome"], frameworks: null, projects: null } });
   const result = validateKnowledgeUnit(unit);
   assert.equal(result.valid, false);
   assert.ok(result.errors.some((e) => e.includes("appliesTo.browsers")));
 });
 
 test("duplicate framework entries in appliesTo.frameworks are rejected", () => {
-  const unit = makeValidUnit({ appliesTo: { browsers: null, frameworks: ["cypress", "cypress"] } });
+  const unit = makeValidUnit({ appliesTo: { browsers: null, frameworks: ["cypress", "cypress"], projects: null } });
   const result = validateKnowledgeUnit(unit);
   assert.equal(result.valid, false);
   assert.ok(result.errors.some((e) => e.includes("appliesTo.frameworks")));
 });
 
 test("empty array for appliesTo.browsers is rejected (use null instead)", () => {
-  const unit = makeValidUnit({ appliesTo: { browsers: [], frameworks: null } });
+  const unit = makeValidUnit({ appliesTo: { browsers: [], frameworks: null, projects: null } });
   const result = validateKnowledgeUnit(unit);
   assert.equal(result.valid, false);
   assert.ok(result.errors.some((e) => e.includes("appliesTo.browsers")));
 });
 
 test("non-string entries in appliesTo.frameworks are rejected", () => {
-  const unit = makeValidUnit({ appliesTo: { browsers: null, frameworks: [123] } });
+  const unit = makeValidUnit({ appliesTo: { browsers: null, frameworks: [123], projects: null } });
   const result = validateKnowledgeUnit(unit);
   assert.equal(result.valid, false);
   assert.ok(result.errors.some((e) => e.includes("appliesTo.frameworks")));
+});
+
+// --- appliesTo.projects (Roadmap #19.3B) --------------------------------
+
+test("appliesTo.projects as a non-empty unique array is valid for a non-PROJECT_VERIFIED unit", () => {
+  const unit = makeValidUnit({
+    sourceType: "CURATED_INTERNAL",
+    appliesTo: { browsers: null, frameworks: ["cypress"], projects: ["external-poi-sut"] },
+  });
+  const result = validateKnowledgeUnit(unit);
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.valid, true);
+});
+
+test("PROJECT_VERIFIED with appliesTo.projects: null is rejected", () => {
+  const unit = makeValidUnit({
+    sourceType: "PROJECT_VERIFIED",
+    appliesTo: { browsers: null, frameworks: ["cypress"], projects: null },
+  });
+  const result = validateKnowledgeUnit(unit);
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("appliesTo.projects") && e.includes("PROJECT_VERIFIED")));
+});
+
+test("PROJECT_VERIFIED with appliesTo.projects: [] is rejected", () => {
+  const unit = makeValidUnit({
+    sourceType: "PROJECT_VERIFIED",
+    appliesTo: { browsers: null, frameworks: ["cypress"], projects: [] },
+  });
+  const result = validateKnowledgeUnit(unit);
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("appliesTo.projects")));
+});
+
+test("PROJECT_VERIFIED with a missing appliesTo.projects key is rejected", () => {
+  const unit = makeValidUnit({
+    sourceType: "PROJECT_VERIFIED",
+    appliesTo: { browsers: null, frameworks: ["cypress"] },
+  });
+  const result = validateKnowledgeUnit(unit);
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("appliesTo.projects")));
+});
+
+test("duplicate project entries in appliesTo.projects are rejected", () => {
+  const unit = makeValidUnit({
+    appliesTo: { browsers: null, frameworks: null, projects: ["external-poi-sut", "external-poi-sut"] },
+  });
+  const result = validateKnowledgeUnit(unit);
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("appliesTo.projects")));
+});
+
+test("empty-string entry in appliesTo.projects is rejected", () => {
+  const unit = makeValidUnit({ appliesTo: { browsers: null, frameworks: null, projects: ["   "] } });
+  const result = validateKnowledgeUnit(unit);
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("appliesTo.projects")));
+});
+
+test("non-array appliesTo.projects is rejected", () => {
+  const unit = makeValidUnit({ appliesTo: { browsers: null, frameworks: null, projects: "external-poi-sut" } });
+  const result = validateKnowledgeUnit(unit);
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.some((e) => e.includes("appliesTo.projects")));
+});
+
+test("a multi-project appliesTo.projects array is valid", () => {
+  const unit = makeValidUnit({
+    appliesTo: { browsers: null, frameworks: null, projects: ["external-poi-sut", "synthetic-project"] },
+  });
+  const result = validateKnowledgeUnit(unit);
+  assert.deepEqual(result.errors, []);
+  assert.equal(result.valid, true);
+});
+
+test("an unknown but syntactically valid project id is accepted by schema (no global registry enforced)", () => {
+  const unit = makeValidUnit({ appliesTo: { browsers: null, frameworks: null, projects: ["future-project"] } });
+  const result = validateKnowledgeUnit(unit);
+  assert.equal(result.valid, true);
 });
 
 // --- priority ----------------------------------------------------------

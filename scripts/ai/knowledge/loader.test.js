@@ -25,7 +25,7 @@ function makeValidUnit(overrides = {}) {
     source: null,
     verifiedAt: "2026-08-18",
     tags: ["timed out retrying", "timeout"],
-    appliesTo: { browsers: null, frameworks: ["cypress"] },
+    appliesTo: { browsers: null, frameworks: ["cypress"], projects: null },
     statement: "A 'Timed out retrying' error can indicate a synchronization gap rather than a broken selector.",
     priority: 5,
   };
@@ -173,6 +173,27 @@ test("duplicate knowledge unit id across two files throws KnowledgeLoadError", (
       assert.ok(err.message.includes("duplicate-id"));
       assert.ok(err.message.includes("first.json"));
       assert.ok(err.message.includes("second.json"));
+      return true;
+    });
+  });
+});
+
+test("a PROJECT_VERIFIED unit with appliesTo.projects: null throws KnowledgeLoadError (Roadmap #19.3B) - cannot silently enter the Knowledge Layer as global", () => {
+  withTempDir((dir) => {
+    writeUnit(
+      dir,
+      "unscoped-project-verified.json",
+      makeValidUnit({
+        id: "unscoped-project-verified",
+        sourceType: "PROJECT_VERIFIED",
+        appliesTo: { browsers: null, frameworks: ["cypress"], projects: null },
+      })
+    );
+
+    assert.throws(() => loadKnowledgeUnits(dir), (err) => {
+      assert.ok(err instanceof KnowledgeLoadError);
+      assert.ok(err.message.includes("appliesTo.projects"));
+      assert.ok(err.message.includes("PROJECT_VERIFIED"));
       return true;
     });
   });
