@@ -1,6 +1,6 @@
 # Test Cases
 
-Manual test-case documentation for the automated Cypress suite in this repository. Target application: [https://poi.targomo.com](https://poi.targomo.com). Browsers covered by CI: Chrome, Edge, Firefox.
+Manual test-case documentation for the automated Cypress suite in this repository. Target application: the external POI (points-of-interest) map web application configured as this suite's Cypress `baseUrl` (see [`cypress.config.js`](cypress.config.js)). Browsers covered by CI: Chrome, Edge, Firefox.
 
 ## Summary
 
@@ -25,7 +25,7 @@ Manual test-case documentation for the automated Cypress suite in this repositor
 **Automated:** ✅ `cypress/e2e/tests/select_group_POI.cy.js`
 
 **Preconditions:**
-- Browser open at `https://poi.targomo.com`
+- Browser open at the configured base URL
 
 **Steps:**
 1. Locate the "Gastronomy" checkbox in the "Select by Category" tree
@@ -43,7 +43,7 @@ Manual test-case documentation for the automated Cypress suite in this repositor
 **Automated:** ✅ `cypress/e2e/tests/select_group_POI.cy.js`
 
 **Preconditions:**
-- Browser open at `https://poi.targomo.com`
+- Browser open at the configured base URL
 
 **Steps:**
 1. Click the expand arrow next to "Gastronomy" to reveal its subcategories
@@ -61,7 +61,7 @@ Manual test-case documentation for the automated Cypress suite in this repositor
 **Automated:** ✅ `cypress/e2e/tests/select_group_POI.cy.js`
 
 **Preconditions:**
-- Browser open at `https://poi.targomo.com`
+- Browser open at the configured base URL
 
 **Steps:**
 1. Expand "Gastronomy"
@@ -79,7 +79,7 @@ Manual test-case documentation for the automated Cypress suite in this repositor
 **Automated:** ✅ `cypress/e2e/tests/select_group_POI.cy.js`
 
 **Preconditions:**
-- Browser open at `https://poi.targomo.com`
+- Browser open at the configured base URL
 
 **Steps:**
 1. Expand "Gastronomy"
@@ -97,7 +97,7 @@ Manual test-case documentation for the automated Cypress suite in this repositor
 **Automated:** ✅ `cypress/e2e/tests/select_group_POI.cy.js`
 
 **Preconditions:**
-- Browser open at `https://poi.targomo.com`
+- Browser open at the configured base URL
 
 **Steps:**
 1. Click the "Gastronomy" checkbox (select it)
@@ -115,7 +115,7 @@ Manual test-case documentation for the automated Cypress suite in this repositor
 **Automated:** ✅ `cypress/e2e/tests/category_tree_behavior.cy.js`
 
 **Preconditions:**
-- Browser open at `https://poi.targomo.com`
+- Browser open at the configured base URL
 
 **Steps:**
 1. Expand "Gastronomy"
@@ -132,7 +132,7 @@ Manual test-case documentation for the automated Cypress suite in this repositor
 **Automated:** ✅ `cypress/e2e/tests/category_tree_behavior.cy.js`
 
 **Preconditions:**
-- Browser open at `https://poi.targomo.com`
+- Browser open at the configured base URL
 
 **Steps:**
 1. Expand "Gastronomy" (subcategories become visible, e.g. "Restaurant")
@@ -150,7 +150,7 @@ Manual test-case documentation for the automated Cypress suite in this repositor
 **Automated:** ✅ `cypress/e2e/tests/category_tree_behavior.cy.js`
 
 **Preconditions:**
-- Browser open at `https://poi.targomo.com`
+- Browser open at the configured base URL
 
 **Steps:**
 1. Click the "Gastronomy" checkbox
@@ -167,14 +167,14 @@ Manual test-case documentation for the automated Cypress suite in this repositor
 **Automated:** ✅ `cypress/e2e/tests/poi_data_requests.cy.js`
 
 **Preconditions:**
-- Browser open at `https://poi.targomo.com`
+- Browser open at the configured base URL
 - Network requests can be observed (dev tools / test-level network interception)
 
 **Steps:**
 1. Click the "Gastronomy" checkbox
 
 **Expected result:**
-- A request is sent to `api.targomo.com/pointofinterest/**/*.mvt` containing the query parameter `group=g_eat-out`, confirming the app actually fetches Gastronomy POI data rather than only updating the UI
+- A request matching `**/pointofinterest/**/*.mvt*` is sent (the same pattern the automated test intercepts as `@poiTiles`), containing the query parameter `group=g_eat-out`, confirming the app actually fetches Gastronomy POI data rather than only updating the UI
 
 ---
 
@@ -184,7 +184,7 @@ Manual test-case documentation for the automated Cypress suite in this repositor
 **Automated:** ✅ `cypress/e2e/tests/poi_data_requests.cy.js`
 
 **Preconditions:**
-- Browser open at `https://poi.targomo.com`
+- Browser open at the configured base URL
 - Network requests can be observed (dev tools / test-level network interception)
 
 **Steps:**
@@ -192,4 +192,4 @@ Manual test-case documentation for the automated Cypress suite in this repositor
 2. Click the "Restaurant" checkbox
 
 **Expected result:**
-- A request is sent to `api.targomo.com/pointofinterest/**/*.mvt` containing the query parameter `group=restaurant`, confirming the app fetches Restaurant-specific POI data
+- A request matching `**/pointofinterest/**/*.mvt*` is sent (the same pattern the automated test intercepts as `@poiTiles`), containing the query parameter `group=restaurant`, confirming the app fetches Restaurant-specific POI data
