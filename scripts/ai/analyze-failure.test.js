@@ -19,6 +19,7 @@ const {
 const { ProviderError, PROVIDER_ERROR_CODES, normalizeProviderError } = require("./providers/provider-error");
 const { MockProvider } = require("./providers/mock-provider");
 const { CLASSIFICATIONS } = require("./qa-agent-prompt");
+const { validateProjectProfile } = require("./project-profile");
 const { loadKnowledgeUnits } = require("./knowledge/loader");
 const { selectKnowledge } = require("./knowledge/selector");
 
@@ -1123,4 +1124,163 @@ test("Roadmap #16C Phase 10: prompt-visible relevantKnowledge and report.sourceC
   const promptPayload = JSON.parse(captured.userPrompt.slice(captured.userPrompt.indexOf("{"), captured.userPrompt.lastIndexOf("}") + 1));
   assert.ok(promptPayload.relevantKnowledge.length > 1, "expected multiple units to genuinely match this multi-signal context");
   assert.deepEqual(report.sourceContext.relevantKnowledge, promptPayload.relevantKnowledge);
+});
+
+// --- Roadmap #19.4S: projectProfile orchestration seam ---------------------
+// Prerequisite discovered while attempting Roadmap #19.4: buildSystemPrompt()
+// has accepted an optional projectProfile since Roadmap #19.2, but no caller
+// in the real analysis pipeline (runProviderAnalysis/buildFailureReport)
+// ever threaded one through - so the ACTUAL provider-visible system prompt
+// always used the production default regardless of context. These tests
+// prove the new `projectProfile` option (a) changes nothing for every
+// existing caller, and (b) has exactly one responsibility - system-prompt
+// profile selection - never touching context, report provenance, the user
+// prompt, or policy.
+
+const SYNTHETIC_PROFILE_SENTINEL = {
+  id: "synthetic-project",
+  displayName: "SYNTHETIC_PROFILE_DISPLAY_SENTINEL",
+  knownProjectConstraints: ["SYNTHETIC_PROFILE_CONSTRAINT_SENTINEL"],
+};
+
+function capturingProvider(resultOverrides = {}) {
+  const captured = [];
+  const provider = {
+    name: "capturing-test-provider",
+    async analyze(request) {
+      captured.push(request);
+      return JSON.stringify({ results: [goodItem(resultOverrides)] });
+    },
+  };
+  return { provider, captured };
+}
+
+test("Roadmap #19.4S: SYNTHETIC_PROFILE_SENTINEL is a valid ProjectProfile under the real contract", () => {
+  assert.equal(validateProjectProfile(SYNTHETIC_PROFILE_SENTINEL).valid, true);
+});
+
+test("Roadmap #19.4S: omitting projectProfile leaves the actual provider-visible system prompt on the production default", async () => {
+  const { provider, captured } = capturingProvider();
+  await buildFailureReport(context, { provider, history: null, relevantKnowledge: [] });
+  assert.match(captured[0].systemPrompt, /poi\.targomo\.com/);
+  assert.equal(captured[0].systemPrompt.includes("SYNTHETIC_PROFILE_DISPLAY_SENTINEL"), false);
+});
+
+test("Roadmap #19.4S: an explicit projectProfile: undefined produces a byte-identical system prompt to omitting the option", async () => {
+  const omitted = capturingProvider();
+  const explicitUndefined = capturingProvider();
+  await buildFailureReport(context, { provider: omitted.provider, history: null, relevantKnowledge: [] });
+  await buildFailureReport(context, { provider: explicitUndefined.provider, history: null, relevantKnowledge: [], projectProfile: undefined });
+  assert.equal(omitted.captured[0].systemPrompt, explicitUndefined.captured[0].systemPrompt);
+});
+
+test("Roadmap #19.4S: an explicit synthetic projectProfile reaches the ACTUAL provider request - not merely a separate buildSystemPrompt() call", async () => {
+  const { provider, captured } = capturingProvider();
+  await buildFailureReport(context, { provider, history: null, relevantKnowledge: [], projectProfile: SYNTHETIC_PROFILE_SENTINEL });
+  assert.match(captured[0].systemPrompt, /SYNTHETIC_PROFILE_DISPLAY_SENTINEL/);
+  assert.equal(captured[0].systemPrompt.includes("poi.targomo.com"), false);
+});
+
+test("Roadmap #19.4S: the seam has one narrow responsibility - a mismatched projectProfile.id never overwrites context or report provenance", async () => {
+  const mismatchedProfile = {
+    id: "PROFILE_PROJECT_SENTINEL",
+    displayName: "PROFILE_DISPLAY_SENTINEL",
+    knownProjectConstraints: ["PROFILE_CONSTRAINT_SENTINEL"],
+  };
+  const localContext = {
+    ...context,
+    metadata: { ...context.metadata, projectId: "CONTEXT_PROJECT_SENTINEL" },
+    knownProjectConstraints: ["CONTEXT_CONSTRAINT_SENTINEL"],
+  };
+  const metadataBefore = JSON.stringify(localContext.metadata);
+  const constraintsBefore = JSON.stringify(localContext.knownProjectConstraints);
+
+  const { provider, captured } = capturingProvider();
+  const report = await buildFailureReport(localContext, {
+    provider,
+    history: null,
+    relevantKnowledge: [],
+    projectProfile: mismatchedProfile,
+  });
+
+  // Context is not mutated by the seam.
+  assert.equal(JSON.stringify(localContext.metadata), metadataBefore);
+  assert.equal(JSON.stringify(localContext.knownProjectConstraints), constraintsBefore);
+
+  // Report provenance stays context-derived, never profile-derived.
+  assert.equal(report.sourceContext.projectId, "CONTEXT_PROJECT_SENTINEL");
+
+  // System prompt uses the profile (its one job).
+  assert.match(captured[0].systemPrompt, /PROFILE_DISPLAY_SENTINEL/);
+
+  // User prompt uses the context's own constraints, never the profile's -
+  // knownProjectConstraints is not auto-copied from projectProfile.
+  const payload = JSON.parse(captured[0].userPrompt.slice(captured[0].userPrompt.indexOf("{"), captured[0].userPrompt.lastIndexOf("}") + 1));
+  assert.deepEqual(payload.knownProjectConstraints, ["CONTEXT_CONSTRAINT_SENTINEL"]);
+  assert.equal(captured[0].userPrompt.includes("PROFILE_CONSTRAINT_SENTINEL"), false);
+});
+
+test("Roadmap #19.4S: the userPrompt is unchanged for identical context regardless of which projectProfile is supplied", async () => {
+  const defaultRun = capturingProvider();
+  const syntheticRun = capturingProvider();
+  await buildFailureReport({ ...context }, { provider: defaultRun.provider, history: null, relevantKnowledge: [] });
+  await buildFailureReport({ ...context }, {
+    provider: syntheticRun.provider,
+    history: null,
+    relevantKnowledge: [],
+    projectProfile: SYNTHETIC_PROFILE_SENTINEL,
+  });
+  assert.equal(defaultRun.captured[0].userPrompt, syntheticRun.captured[0].userPrompt);
+  assert.notEqual(defaultRun.captured[0].systemPrompt, syntheticRun.captured[0].systemPrompt);
+});
+
+test("Roadmap #19.4S: provider request carries only the existing {systemPrompt, userPrompt} shape - no third projectProfile key leaks into the provider contract", async () => {
+  const { provider, captured } = capturingProvider();
+  await buildFailureReport(context, { provider, history: null, relevantKnowledge: [], projectProfile: SYNTHETIC_PROFILE_SENTINEL });
+  assert.deepEqual(Object.keys(captured[0]).sort(), ["systemPrompt", "userPrompt"]);
+});
+
+test("Roadmap #19.4S: a fixed provider response produces identical deterministic policy behavior regardless of projectProfile - project identity never reaches applyAgentPolicy()", async () => {
+  const fixedOverrides = { classification: "TEST_BUG", confidence: 0.8, shouldCreateBug: true };
+  const defaultRun = await buildFailureReport(context, {
+    provider: capturingProvider(fixedOverrides).provider,
+    history: null,
+    relevantKnowledge: [],
+  });
+  const syntheticRun = await buildFailureReport(context, {
+    provider: capturingProvider(fixedOverrides).provider,
+    history: null,
+    relevantKnowledge: [],
+    projectProfile: SYNTHETIC_PROFILE_SENTINEL,
+  });
+  assert.equal(defaultRun.results[0].classification, syntheticRun.results[0].classification);
+  assert.equal(defaultRun.results[0].confidence, syntheticRun.results[0].confidence);
+  // Policy safeguard: TEST_BUG can never keep shouldCreateBug=true, for either profile.
+  assert.equal(defaultRun.results[0].shouldCreateBug, false);
+  assert.equal(syntheticRun.results[0].shouldCreateBug, false);
+});
+
+test("Roadmap #19.4S: the selected projectProfile/systemPrompt is preserved unchanged across a retried provider attempt", async () => {
+  const captured = [];
+  let attempts = 0;
+  const retryProvider = {
+    name: "retry-test-provider",
+    async analyze(request) {
+      captured.push(request);
+      attempts += 1;
+      if (attempts === 1) {
+        throw new ProviderError("transient", { code: PROVIDER_ERROR_CODES.NETWORK, retryable: true });
+      }
+      return JSON.stringify({ results: [goodItem()] });
+    },
+  };
+
+  await runProviderAnalysis(retryProvider, context, {
+    projectProfile: SYNTHETIC_PROFILE_SENTINEL,
+    sleep: async () => {},
+  });
+
+  assert.equal(captured.length, 2, "expected exactly one retry after the first transient failure");
+  assert.equal(captured[0].systemPrompt, captured[1].systemPrompt);
+  assert.match(captured[0].systemPrompt, /SYNTHETIC_PROFILE_DISPLAY_SENTINEL/);
 });
