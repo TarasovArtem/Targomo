@@ -9,6 +9,7 @@ const {
   getRelevantBrowsers,
   getRelevantFrameworks,
   getRelevantProjectId,
+  classifyFrameworkId,
 } = require("./selector");
 const { loadKnowledgeUnits } = require("./loader");
 
@@ -687,6 +688,125 @@ test("getRelevantBrowsers falls back to metadata.browser when no browserCorrelat
 test("getRelevantFrameworks defaults to cypress when context.frameworks is absent", () => {
   const context = makeContext();
   assert.deepEqual(getRelevantFrameworks(context), ["cypress"]);
+});
+
+// --- Roadmap #19.5B: canonical context.metadata.framework precedence ------
+
+test("classifyFrameworkId: ABSENT when metadata has no framework property at all", () => {
+  assert.deepEqual(classifyFrameworkId({}), { state: "ABSENT", value: null });
+  assert.deepEqual(classifyFrameworkId(null), { state: "ABSENT", value: null });
+  assert.deepEqual(classifyFrameworkId(undefined), { state: "ABSENT", value: null });
+});
+
+test("classifyFrameworkId: VALID trims and lowercases a genuine non-empty string", () => {
+  assert.deepEqual(classifyFrameworkId({ framework: "Cypress" }), { state: "VALID", value: "cypress" });
+  assert.deepEqual(classifyFrameworkId({ framework: " Playwright " }), { state: "VALID", value: "playwright" });
+});
+
+test("classifyFrameworkId: INVALID for a present but malformed value (null/empty/whitespace/non-string) - never conflated with ABSENT", () => {
+  for (const malformed of [null, "", "   ", 42, {}, []]) {
+    assert.deepEqual(classifyFrameworkId({ framework: malformed }), { state: "INVALID", value: null }, `expected INVALID for ${JSON.stringify(malformed)}`);
+  }
+});
+
+test("getRelevantFrameworks: a VALID canonical metadata.framework is authoritative, used alone", () => {
+  const context = makeContext({ metadata: { framework: "playwright" } });
+  assert.deepEqual(getRelevantFrameworks(context), ["playwright"]);
+});
+
+test("getRelevantFrameworks: canonical metadata.framework overrides legacy context.frameworks entirely - never unioned", () => {
+  const context = makeContext({ metadata: { framework: "playwright" }, frameworks: ["cypress"] });
+  assert.deepEqual(getRelevantFrameworks(context), ["playwright"]);
+});
+
+test("getRelevantFrameworks: an INVALID present canonical value fails closed to an empty set - never falls back to legacy context.frameworks or the cypress default", () => {
+  const context = makeContext({ metadata: { framework: "   " }, frameworks: ["cypress"] });
+  assert.deepEqual(getRelevantFrameworks(context), []);
+});
+
+test("getRelevantFrameworks: ABSENT canonical framework preserves the pre-#19.5B legacy context.frameworks behavior unchanged", () => {
+  const context = makeContext({ metadata: {}, frameworks: ["playwright"] });
+  assert.deepEqual(getRelevantFrameworks(context), ["playwright"]);
+});
+
+test("getRelevantFrameworks: ABSENT canonical AND no legacy context.frameworks preserves the pre-#19.5B cypress compatibility default", () => {
+  const context = makeContext({ metadata: {} });
+  assert.deepEqual(getRelevantFrameworks(context), ["cypress"]);
+});
+
+test("Roadmap #19.5B: symmetric Knowledge framework matrix for a canonical playwright context - cypress-scoped unit SKIP, playwright-scoped unit ALLOW, global unit ALLOW", () => {
+  const cypressScopedUnit = makeUnit({ id: "cypress-scoped", tags: ["FW_MATRIX_SENTINEL"], appliesTo: { browsers: null, frameworks: ["cypress"], projects: null } });
+  const playwrightScopedUnit = makeUnit({ id: "playwright-scoped", tags: ["FW_MATRIX_SENTINEL"], appliesTo: { browsers: null, frameworks: ["playwright"], projects: null } });
+  const globalUnit = makeUnit({ id: "global-unit", tags: ["FW_MATRIX_SENTINEL"], appliesTo: { browsers: null, frameworks: null, projects: null } });
+
+  const context = makeContext({ metadata: { framework: "playwright" }, failedTests: [{ error: { message: "FW_MATRIX_SENTINEL" } }] });
+  const selected = selectKnowledge(context, [cypressScopedUnit, playwrightScopedUnit, globalUnit]).map((u) => u.id);
+
+  assert.equal(selected.includes("cypress-scoped"), false);
+  assert.ok(selected.includes("playwright-scoped"));
+  assert.ok(selected.includes("global-unit"));
+});
+
+test("Roadmap #19.5B: an explicitly invalid canonical framework excludes every framework-scoped unit but leaves global (frameworks:null) units eligible", () => {
+  const cypressScopedUnit = makeUnit({ id: "cypress-scoped", tags: ["FW_INVALID_SENTINEL"], appliesTo: { browsers: null, frameworks: ["cypress"], projects: null } });
+  const playwrightScopedUnit = makeUnit({ id: "playwright-scoped", tags: ["FW_INVALID_SENTINEL"], appliesTo: { browsers: null, frameworks: ["playwright"], projects: null } });
+  const globalUnit = makeUnit({ id: "global-unit", tags: ["FW_INVALID_SENTINEL"], appliesTo: { browsers: null, frameworks: null, projects: null } });
+
+  const context = makeContext({ metadata: { framework: 42 }, failedTests: [{ error: { message: "FW_INVALID_SENTINEL" } }] });
+  const selected = selectKnowledge(context, [cypressScopedUnit, playwrightScopedUnit, globalUnit]).map((u) => u.id);
+
+  assert.equal(selected.includes("cypress-scoped"), false);
+  assert.equal(selected.includes("playwright-scoped"), false);
+  assert.ok(selected.includes("global-unit"));
+});
+
+test("Roadmap #19.5B: legacy context.frameworks (canonical absent) still correctly routes to a playwright-scoped unit and excludes cypress-scoped", () => {
+  const cypressScopedUnit = makeUnit({ id: "cypress-scoped", tags: ["FW_LEGACY_SENTINEL"], appliesTo: { browsers: null, frameworks: ["cypress"], projects: null } });
+  const playwrightScopedUnit = makeUnit({ id: "playwright-scoped", tags: ["FW_LEGACY_SENTINEL"], appliesTo: { browsers: null, frameworks: ["playwright"], projects: null } });
+
+  const context = makeContext({ metadata: {}, frameworks: ["playwright"], failedTests: [{ error: { message: "FW_LEGACY_SENTINEL" } }] });
+  const selected = selectKnowledge(context, [cypressScopedUnit, playwrightScopedUnit]).map((u) => u.id);
+
+  assert.equal(selected.includes("cypress-scoped"), false);
+  assert.ok(selected.includes("playwright-scoped"));
+});
+
+test("Roadmap #19.5B: with both canonical and legacy fields absent, the legacy cypress default still correctly selects a cypress-scoped unit", () => {
+  const cypressScopedUnit = makeUnit({ id: "cypress-scoped", tags: ["FW_DEFAULT_SENTINEL"], appliesTo: { browsers: null, frameworks: ["cypress"], projects: null } });
+  const playwrightScopedUnit = makeUnit({ id: "playwright-scoped", tags: ["FW_DEFAULT_SENTINEL"], appliesTo: { browsers: null, frameworks: ["playwright"], projects: null } });
+
+  const context = makeContext({ metadata: {}, failedTests: [{ error: { message: "FW_DEFAULT_SENTINEL" } }] });
+  const selected = selectKnowledge(context, [cypressScopedUnit, playwrightScopedUnit]).map((u) => u.id);
+
+  assert.ok(selected.includes("cypress-scoped"));
+  assert.equal(selected.includes("playwright-scoped"), false);
+});
+
+test("Roadmap #19.5B: canonical framework routing does not alter project or browser gates, ranking, or the returned {id, statement} shape", () => {
+  const projectScopedUnit = makeUnit({
+    id: "project-scoped",
+    tags: ["FW_PROJECT_SENTINEL"],
+    priority: 10,
+    appliesTo: { browsers: ["firefox"], frameworks: ["playwright"], projects: ["some-project"] },
+  });
+  const context = makeContext({
+    metadata: { framework: "playwright", browser: "firefox", projectId: "some-project" },
+    failedTests: [{ error: { message: "FW_PROJECT_SENTINEL" } }],
+  });
+  const selected = selectKnowledge(context, [projectScopedUnit]);
+  assert.deepEqual(selected, [{ id: "project-scoped", statement: projectScopedUnit.statement }]);
+
+  const wrongProjectContext = makeContext({
+    metadata: { framework: "playwright", browser: "firefox", projectId: "different-project" },
+    failedTests: [{ error: { message: "FW_PROJECT_SENTINEL" } }],
+  });
+  assert.deepEqual(selectKnowledge(wrongProjectContext, [projectScopedUnit]), []);
+
+  const wrongBrowserContext = makeContext({
+    metadata: { framework: "playwright", browser: "chrome", projectId: "some-project" },
+    failedTests: [{ error: { message: "FW_PROJECT_SENTINEL" } }],
+  });
+  assert.deepEqual(selectKnowledge(wrongBrowserContext, [projectScopedUnit]), []);
 });
 
 test("default maxUnits/maxChars apply when options is omitted entirely", () => {

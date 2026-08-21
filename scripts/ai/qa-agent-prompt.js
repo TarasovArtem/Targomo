@@ -51,12 +51,19 @@ const EXAMPLE_RESULT_ITEM = {
 // (analyze-failure.js, and every test in this file that calls
 // buildSystemPrompt() with no arguments) keeps working unchanged. A
 // future second project is supplied by passing a different profile
-// object here - never by editing this function. Framework identity
-// ("Cypress" below) is deliberately NOT parameterized yet - that is a
-// separate, later Roadmap #19 stage (framework portability), not this
-// one (project portability only).
-function buildSystemPrompt(projectProfile = TARGOMO_PROJECT_PROFILE) {
-  return `You are a Senior QA Automation Engineer performing failure triage for a Cypress end-to-end suite that tests ${projectProfile.displayName}. The test suite does not control that application's code, infrastructure, or uptime.
+// object here - never by editing this function.
+//
+// `frameworkId` (Roadmap #19.5B) supplies the current test-framework
+// identity, read by analyze-failure.js straight off
+// context.metadata.framework - defaults to "cypress" so every existing
+// caller/test that omits it (and every legacy context predating explicit
+// framework identity) keeps rendering the same, deterministic,
+// Cypress-compatible persona it always has. Framework identity is
+// execution/context-level only - this parameter is never per-failure, and
+// this function performs no framework-specific branching: it only
+// interpolates the string it's given, exactly like projectProfile.
+function buildSystemPrompt(projectProfile = TARGOMO_PROJECT_PROFILE, frameworkId = "cypress") {
+  return `You are a Senior QA Automation Engineer performing failure triage for an end-to-end test suite (current test framework: ${frameworkId}) that tests ${projectProfile.displayName}. The test suite does not control that application's code, infrastructure, or uptime.
 
 For each failed test you are given, classify it using ONLY the evidence provided. Do not assume or invent anything not present in the supplied context.
 
@@ -72,7 +79,7 @@ CRITICAL RULES (violating any of these makes your answer wrong even if the class
 1. A test failing is never, by itself, evidence of PRODUCT_BUG. You must cite specific evidence (an error message, stack trace line, network/HTTP detail, or DOM assertion) that points at the product rather than the test or environment.
 2. Never fabricate evidence. Every entry in "evidence" must be something drawn directly from the provided context (an error message, a line of code, a config value, a metadata field) - not a plausible-sounding guess.
 3. If the provided context is insufficient to confidently distinguish between causes, set classification to "UNKNOWN" and keep confidence low. Do not pick a specific classification just to avoid saying UNKNOWN.
-4. In recommendedFix, never recommend a fixed-duration arbitrary wait (e.g. "cy.wait(5000)", "page.waitForTimeout(3000)"), a longer timeout just to stop the flakiness, deleting or weakening an assertion, skipping the test, or adding unbounded retries - unless the evidence explicitly proves no deterministic alternative exists. Strongly prefer deterministic synchronization: cy.intercept()/cy.wait('@alias') on a specific network call, asserting on a specific DOM/state condition (Cypress's built-in retry-ability), a loading-indicator/application-event state, or waiting on an explicit, named condition. If you cannot propose a concrete, evidence-backed fix, set recommendedFix to null rather than suggesting a vague or arbitrary-wait fix.
+4. In recommendedFix, never recommend a fixed-duration arbitrary wait (e.g. "cy.wait(5000)", "page.waitForTimeout(3000)"), a longer timeout just to stop the flakiness, deleting or weakening an assertion, skipping the test, or adding unbounded retries - unless the evidence explicitly proves no deterministic alternative exists. Strongly prefer deterministic synchronization: cy.intercept()/cy.wait('@alias') on a specific network call, asserting on a specific DOM/state condition (the test framework's built-in retry-ability, where available), a loading-indicator/application-event state, or waiting on an explicit, named condition. If you cannot propose a concrete, evidence-backed fix, set recommendedFix to null rather than suggesting a vague or arbitrary-wait fix.
 5. Base your reasoning on all of: the test's own error message and stack trace, the failed test's source code, the page objects/helpers it uses (selectors, synchronization patterns), which browser ran it, whether it ran in CI, any signs of retries, any network-related errors, all provided run metadata (commit/branch/CI/event), any provided knownProjectConstraints (see rule 9), and whether the failure implicates a dependency external to this repository.
 6. confidence must be a number between 0 and 1 reflecting your certainty given ONLY the provided evidence - not how confident you generally feel about the topic.
 7. Return exactly one result per failed test provided, in the same order they were given, each identified by its "test" field (title + specFile) matching the input.
@@ -118,7 +125,14 @@ ${JSON.stringify({ results: [EXAMPLE_RESULT_ITEM] }, null, 2)}
 // readHistory()/pickSourceContext()), not something the model was ever
 // instructed to reason about, and must never reach the prompt regardless
 // of which project produced the context.
-const PROMPT_METADATA_ALLOWLIST = ["browser", "ci", "commit", "branch", "event"];
+//
+// `framework` (Roadmap #19.5B) is deliberately included: unlike the
+// internal project namespace id, "cypress"/"playwright" are meaningful,
+// human-legible diagnostic semantics the model is explicitly told about
+// (see the persona sentence and rule 4's synchronization guidance above) -
+// the same category of genuinely operational context as `browser`, not an
+// internal trust/eligibility signal.
+const PROMPT_METADATA_ALLOWLIST = ["browser", "ci", "commit", "branch", "event", "framework"];
 
 function pickPromptMetadata(metadata) {
   const m = metadata || {};
@@ -132,6 +146,28 @@ function pickPromptMetadata(metadata) {
     // future caller passes in.
     if (Object.prototype.hasOwnProperty.call(m, key) && m[key] !== undefined) picked[key] = m[key];
   }
+
+  // Roadmap #19.5B: `framework` alone carries declared FrameworkId
+  // semantics (open, trimmed, lowercase string - see
+  // knowledge/selector.js's classifyFrameworkId()) that the other
+  // allowlisted fields do not. Unlike browser/ci/commit/branch/event
+  // (passed through as-is, exactly as before), a present-but-malformed
+  // framework value (whitespace/number/object/array) must never reach the
+  // model as literal garbage, and a genuinely valid value must be
+  // normalized the same way Knowledge already treats it - otherwise the
+  // LLM-visible identity could disagree with the one Knowledge actually
+  // used to select curated guidance. Excluded entirely (never a raw
+  // fallback) when malformed - the own-property check above already
+  // excludes it correctly when genuinely absent.
+  if (Object.prototype.hasOwnProperty.call(picked, "framework")) {
+    const raw = picked.framework;
+    if (typeof raw === "string" && raw.trim().length > 0) {
+      picked.framework = raw.trim().toLowerCase();
+    } else {
+      delete picked.framework;
+    }
+  }
+
   return picked;
 }
 

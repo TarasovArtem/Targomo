@@ -88,6 +88,29 @@ function classifyProjectId(object, key) {
   return { state: "VALID", value: raw.trim() };
 }
 
+// Roadmap #19.5B: classifies context.metadata.framework's presence/
+// well-formedness the same way classifyProjectId() above already does for
+// project identity - ABSENT (never set) vs. INVALID (present but
+// malformed: null/""/whitespace/non-string) vs. VALID (normalized: trim +
+// lowercase, matching the declared FrameworkId contract). Deliberately a
+// separate local copy from knowledge/selector.js's own classifyFrameworkId()
+// - not a shared module - following this repository's existing "small
+// duplicated primitives, not a shared refactor" convention (see that
+// module's own comment). Both classifiers must still agree on what counts
+// as VALID/ABSENT/INVALID so every consumer (Knowledge eligibility here vs.
+// the actual provider-visible systemPrompt/userPrompt/report provenance in
+// this file) represents one coherent canonical framework identity - only
+// each consumer's handling of the non-VALID states differs.
+function classifyFrameworkId(metadata) {
+  const hasProperty = Boolean(metadata) && Object.prototype.hasOwnProperty.call(metadata, "framework");
+  if (!hasProperty) return { state: "ABSENT", value: null };
+
+  const raw = metadata.framework;
+  if (typeof raw !== "string" || raw.trim().length === 0) return { state: "INVALID", value: null };
+
+  return { state: "VALID", value: raw.trim().toLowerCase() };
+}
+
 // Roadmap #19.3C: whether History collected for one project may be used
 // while analyzing another. Two VALID identities must match exactly (by
 // trimmed value); ABSENT+ABSENT is the one narrow legacy-compatibility
@@ -159,6 +182,12 @@ function computeRelevantKnowledge(context) {
 
 function pickSourceContext(context) {
   const m = context.metadata || {};
+  // Roadmap #19.5B: classified, not read raw - a present-but-malformed
+  // context.metadata.framework (whitespace/number/object/array) must never
+  // be persisted verbatim into report provenance, only a genuinely VALID,
+  // normalized identity or null (covering both ABSENT and INVALID alike,
+  // since neither represents a trustworthy canonical value).
+  const frameworkClassification = classifyFrameworkId(m);
   return {
     // Stable, machine-readable project identity (Roadmap #19.2) - read
     // straight off context.metadata.projectId (set by
@@ -167,6 +196,13 @@ function pickSourceContext(context) {
     // predates this field or wasn't produced by the collector (e.g. a
     // hand-built test fixture).
     projectId: m.projectId ?? null,
+    // Roadmap #19.5B: canonical test-framework identity, derived from
+    // context.metadata.framework (set by collect-context.js) via
+    // classifyFrameworkId(), never derived from specFile/workflow/Knowledge
+    // defaults here. null for a context that predates this field, and
+    // equally null for a present-but-malformed value - additive provenance
+    // only, exactly like projectId's own null legacy fallback above.
+    framework: frameworkClassification.state === "VALID" ? frameworkClassification.value : null,
     repository: m.repository ?? null,
     commit: m.commit ?? null,
     branch: m.branch ?? null,
@@ -341,7 +377,29 @@ async function runProviderAnalysis(
   // through to its own existing default parameter exactly as before -
   // this line changes no existing behavior, only what a future explicit
   // caller can opt into.
-  const systemPrompt = buildSystemPrompt(projectProfile);
+  //
+  // Roadmap #19.5B: frameworkId is derived from context.metadata.framework
+  // (the same canonical location report provenance and Knowledge selection
+  // both already read) via classifyFrameworkId(), rather than the raw
+  // property value - a raw, unvalidated pass-through would let a
+  // malformed value (whitespace/number/object/array) render as literal
+  // garbage inside the persona sentence (e.g. "current test framework:
+  // [object Object]"), which is never acceptable model input. ABSENT
+  // (undefined) still falls through to buildSystemPrompt()'s own existing
+  // "cypress" default parameter, exactly the same no-behavior-change-for-
+  // legacy pattern projectProfile already uses. INVALID (present but
+  // malformed) deliberately does NOT fall through to that same default -
+  // silently mapping a genuinely malformed value to "cypress" would
+  // misrepresent it as the ordinary legacy case - so it renders the
+  // explicit, deterministic "unknown" label instead.
+  const frameworkClassification = classifyFrameworkId(context && context.metadata);
+  const frameworkId =
+    frameworkClassification.state === "VALID"
+      ? frameworkClassification.value
+      : frameworkClassification.state === "INVALID"
+        ? "unknown"
+        : undefined;
+  const systemPrompt = buildSystemPrompt(projectProfile, frameworkId);
   const userPrompt = buildUserPrompt(context);
 
   let raw;
@@ -568,6 +626,7 @@ module.exports = {
   pickSourceContext,
   readHistory,
   classifyProjectId,
+  classifyFrameworkId,
   isHistoryProjectEligible,
   computeRelevantKnowledge,
   MODEL,

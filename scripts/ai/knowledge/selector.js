@@ -32,11 +32,11 @@
 const DEFAULT_MAX_UNITS = 5;
 const DEFAULT_MAX_CHARS = 2000;
 
-// This repository's own Cypress-only nature (see package.json/README) is
-// treated as the default framework signal - no context.json field
-// currently carries an explicit "framework" value. Overridable via
-// context.frameworks (an array) purely so this stays testable without
-// hardcoding "cypress" unconditionally into the matching logic itself.
+// Legacy compatibility fallback only (Roadmap #19.5B) - used when NEITHER
+// the canonical context.metadata.framework NOR the legacy context.frameworks
+// array is usable. This repository's own historically Cypress-only nature
+// is the reason this constant is "cypress", not a guess: every context this
+// fallback still applies to predates explicit framework identity entirely.
 const DEFAULT_FRAMEWORKS = ["cypress"];
 
 function normalize(text) {
@@ -59,7 +59,48 @@ function getRelevantBrowsers(context) {
   return metaBrowser ? [metaBrowser] : [];
 }
 
+// Roadmap #19.5B: classifies context.metadata.framework's presence/
+// well-formedness the same way #19.3C's classifyProjectId() already does
+// for project identity - a property that was never set at all (ABSENT) is
+// a fundamentally different, more permissive signal than one that IS set
+// but broken (INVALID, e.g. null/""/whitespace/non-string): only ABSENT
+// may fall back to legacy context.frameworks / DEFAULT_FRAMEWORKS: an
+// explicitly-set-but-malformed value must never be silently reinterpreted
+// as "no opinion". Local to this module (not shared with
+// analyze-failure.js's classifyProjectId()) since each classifies a
+// different field for a different gate, following this repository's
+// existing "small duplicated primitives, not a shared refactor"
+// convention (see knowledge/schema.js's own module comment).
+function classifyFrameworkId(metadata) {
+  const hasProperty = Boolean(metadata) && Object.prototype.hasOwnProperty.call(metadata, "framework");
+  if (!hasProperty) return { state: "ABSENT", value: null };
+
+  const raw = metadata.framework;
+  if (typeof raw !== "string" || raw.trim().length === 0) return { state: "INVALID", value: null };
+
+  return { state: "VALID", value: raw.trim().toLowerCase() };
+}
+
+// Roadmap #19.5B precedence: a VALID canonical context.metadata.framework
+// is authoritative and used alone - it is never unioned with legacy
+// context.frameworks. Only when the canonical field is genuinely ABSENT
+// does the pre-#19.5B legacy behavior apply unchanged (explicit
+// context.frameworks array, else DEFAULT_FRAMEWORKS). An INVALID
+// (present-but-malformed) canonical value returns [] - fail-closed for
+// every framework-scoped unit (intersects() with an empty set is always
+// false) while leaving framework-orthogonal (appliesTo.frameworks: null)
+// units completely unaffected, since isEligible() only consults
+// relevantFrameworks when the UNIT itself declares a non-null scope. This
+// mirrors exactly how a missing/invalid currentProjectId already
+// fail-closes project-scoped Knowledge above, without needing any change
+// to isEligible() itself.
 function getRelevantFrameworks(context) {
+  const classified = classifyFrameworkId(context && context.metadata);
+
+  if (classified.state === "VALID") return [classified.value];
+  if (classified.state === "INVALID") return [];
+
+  // ABSENT - unchanged pre-#19.5B legacy behavior.
   return context && Array.isArray(context.frameworks) ? context.frameworks : DEFAULT_FRAMEWORKS;
 }
 
@@ -231,6 +272,7 @@ module.exports = {
   getRelevantBrowsers,
   getRelevantFrameworks,
   getRelevantProjectId,
+  classifyFrameworkId,
   DEFAULT_MAX_UNITS,
   DEFAULT_MAX_CHARS,
 };
