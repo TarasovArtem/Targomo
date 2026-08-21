@@ -1,0 +1,104 @@
+name: Firefox poiTiles Diagnostic (temporary)
+
+# TEMPORARY DIAGNOSTIC WORKFLOW - Roadmap #19.7F-B2.
+# Exists only on diagnostic/firefox-poitiles-linux. Not part of the
+# production CI pipeline, never merged to main. No AI/provider path of any
+# kind - no qa-ai-triage job, no ai:collect, no ai:analyze, no GROQ/Gemini
+# secrets referenced anywhere in this file. Manual trigger only.
+
+on:
+  workflow_dispatch:
+    inputs:
+      firefox_version:
+        description: "Firefox version for browser-actions/setup-firefox (e.g. 'latest' or an exact pinned version such as '154.0')"
+        required: false
+        default: "latest"
+      max_attempts:
+        description: "Maximum sequential poi_data_requests.cy.js attempts before stopping the baseline loop"
+        required: false
+        default: "15"
+
+permissions:
+  contents: read
+
+jobs:
+  firefox-poitiles-diagnostic:
+    name: Firefox poiTiles diagnostic (Linux, sequential, workers=1)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "npm"
+
+      # Mirrors firefox-tests' own bare-runner Firefox provisioning exactly,
+      # except firefox-version is a workflow_dispatch input instead of a
+      # hardcoded "latest", so this same workflow can be re-run with an
+      # exact pinned version once Phase 5/21 discovers what "latest"
+      # actually resolved to.
+      - name: Set up Firefox
+        uses: browser-actions/setup-firefox@v1
+        with:
+          firefox-version: ${{ github.event.inputs.firefox_version }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Runtime diagnostics
+        run: |
+          echo "=== uname -a ==="
+          uname -a
+          echo "=== /etc/os-release ==="
+          cat /etc/os-release
+          echo "=== node --version ==="
+          node --version
+          echo "=== npm --version ==="
+          npm --version
+          echo "=== npx cypress version ==="
+          npx cypress version
+          echo "=== npx cypress verify ==="
+          npx cypress verify
+          echo "=== firefox --version ==="
+          firefox --version
+          which firefox
+          echo "=== free -h ==="
+          free -h
+          echo "=== df -h ==="
+          df -h
+          echo "=== df -h /dev/shm ==="
+          df -h /dev/shm || true
+          echo "=== mount | grep shm ==="
+          mount | grep shm || true
+          echo "=== ulimit -a ==="
+          ulimit -a
+          echo "=== DISPLAY env (name only, no values dumped otherwise) ==="
+          echo "DISPLAY=${DISPLAY:-<unset>}"
+
+      - name: Test surface identity check
+        run: |
+          echo "HEAD: $(git rev-parse HEAD)"
+          if git diff --exit-code d9bc0e428ab56b5098d75ca9d20adb2b499523dd -- cypress cypress.config.js package.json package-lock.json; then
+            echo "TEST_SURFACE_UNCHANGED=YES"
+          else
+            echo "TEST_SURFACE_UNCHANGED=NO"
+          fi
+
+      - name: Sequential targeted Firefox diagnostic
+        id: diagnostic
+        env:
+          MAX_ATTEMPTS: ${{ github.event.inputs.max_attempts }}
+        run: bash scripts/diagnostics/firefox-poitiles-diagnostic.sh
+
+      - name: Upload diagnostic artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: firefox-poitiles-diagnostic-artifacts
+          path: diagnostic-artifacts
+          if-no-files-found: ignore
