@@ -7,6 +7,14 @@ name: Firefox poiTiles Diagnostic (temporary)
 # secrets referenced anywhere in this file. Manual trigger only.
 
 on:
+  # push trigger is scoped ONLY to this diagnostic branch, purely because
+  # GitHub requires a workflow_dispatch-triggered workflow to already exist
+  # on the default branch before it can be dispatched via UI/API - since
+  # this workflow must never be merged to main, push-to-this-branch is the
+  # only way to actually run it. It never fires on any other branch.
+  push:
+    branches:
+      - diagnostic/firefox-poitiles-linux
   workflow_dispatch:
     inputs:
       firefox_version:
