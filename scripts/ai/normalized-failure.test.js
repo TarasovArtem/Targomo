@@ -3,7 +3,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { validateNormalizedFailure } = require("./normalized-failure");
-const { extractFailedTests } = require("./collect-context");
+const { extractFailedTests } = require("./adapters/cypress-adapter");
 
 function validMinimalFailure(overrides = {}) {
   return {
