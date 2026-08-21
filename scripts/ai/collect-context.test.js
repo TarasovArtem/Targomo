@@ -218,6 +218,21 @@ test("getMetadata: projectId is the stable production project identity (Roadmap 
   assert.equal(getMetadata().projectId, TARGOMO_PROJECT_PROFILE.id);
 });
 
+test("getMetadata: framework is unconditionally the stable canonical identity 'cypress' (Roadmap #19.5B)", () => {
+  assert.equal(getMetadata().framework, "cypress");
+});
+
+test("getMetadata: framework is present even with no relevant environment variables set", (t) => {
+  const saved = { ...process.env };
+  t.after(() => {
+    process.env = saved;
+  });
+  for (const key of ["GITHUB_REPOSITORY", "GITHUB_SHA", "GITHUB_HEAD_REF", "GITHUB_REF_NAME", "GITHUB_RUN_ID", "GITHUB_EVENT_NAME", "TEST_BROWSER", "BROWSER", "CYPRESS_BROWSER", "CI"]) {
+    delete process.env[key];
+  }
+  assert.equal(getMetadata().framework, "cypress");
+});
+
 test("truncateText: leaves short text untouched", () => {
   assert.equal(truncateText("short", 100), "short");
 });

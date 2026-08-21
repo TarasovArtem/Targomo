@@ -38,6 +38,16 @@ const MAX_STACK_CHARS = 4000;
 // classification shortcut - see qa-agent-prompt.js rule 9).
 const PROJECT_PROFILE = TARGOMO_PROJECT_PROFILE;
 
+// Roadmap #19.5B: this collector's stable, canonical, machine-readable
+// test-framework identity - never inferred from the workflow filename,
+// spec file extension, browser, or Mochawesome's own contents, exactly
+// the same "stated once, as a constant, not derived" pattern already used
+// for PROJECT_PROFILE. This collector is Cypress-specific today (see
+// extractFailedTests()'s Mochawesome traversal below), so its own
+// identity is exactly and only "cypress" - a future framework's collector
+// (Roadmap #19.6+) would state its own constant here, never branch on one.
+const FRAMEWORK_ID = "cypress";
+
 // Only files under these repo-relative roots (or exactly matching one of
 // the extra allowed paths) are ever read into relevantFiles, even if an
 // import resolves elsewhere. This is a defensive boundary, not just a
@@ -75,6 +85,10 @@ function getMetadata() {
     // scripts/ai/project-profile.js for the single source of
     // truth this value is read from.
     projectId: PROJECT_PROFILE.id,
+    // Roadmap #19.5B: canonical, unconditional test-framework identity -
+    // always this collector's own FRAMEWORK_ID, never derived per-run (see
+    // the constant's own comment above).
+    framework: FRAMEWORK_ID,
     repository: process.env.GITHUB_REPOSITORY || runGit(["remote", "get-url", "origin"]) || null,
     commit: process.env.GITHUB_SHA || runGit(["rev-parse", "HEAD"]) || null,
     branch:

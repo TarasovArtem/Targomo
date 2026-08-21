@@ -1284,3 +1284,132 @@ test("Roadmap #19.4S: the selected projectProfile/systemPrompt is preserved unch
   assert.equal(captured[0].systemPrompt, captured[1].systemPrompt);
   assert.match(captured[0].systemPrompt, /SYNTHETIC_PROFILE_DISPLAY_SENTINEL/);
 });
+
+// --- Roadmap #19.5B: explicit framework identity ----------------------------
+// The shared `context` fixture above never set metadata.framework, so every
+// existing test above this section already covers the legacy/absent path
+// unmodified. These tests exercise the new, additive canonical-framework
+// behavior specifically, through the same real buildFailureReport()/
+// runProviderAnalysis() core - never a separate fake path.
+
+test("Roadmap #19.5B: report.sourceContext.framework is null for a legacy context that never set metadata.framework", async () => {
+  const { provider } = capturingProvider();
+  const report = await buildFailureReport(context, { provider, history: null, relevantKnowledge: [] });
+  assert.equal(report.sourceContext.framework, null);
+});
+
+test("Roadmap #19.5B: report.sourceContext.framework reflects the current context's canonical metadata.framework - additive, no other field changes", async () => {
+  const cypressContext = { ...context, metadata: { ...context.metadata, framework: "cypress" } };
+  const { provider } = capturingProvider();
+  const report = await buildFailureReport(cypressContext, { provider, history: null, relevantKnowledge: [] });
+
+  assert.equal(report.sourceContext.framework, "cypress");
+  // Additive only - every other sourceContext field keeps its own,
+  // independently-derived value.
+  assert.equal(report.sourceContext.browser, "chrome");
+  assert.equal(report.sourceContext.repository, "o/r");
+});
+
+test("Roadmap #19.5B: the actual provider-visible systemPrompt identifies the current context's real canonical framework, through the real buildFailureReport() core - not a separate fake path", async () => {
+  const cypressContext = { ...context, metadata: { ...context.metadata, framework: "cypress" } };
+  const { provider, captured } = capturingProvider();
+  await buildFailureReport(cypressContext, { provider, history: null, relevantKnowledge: [] });
+
+  assert.match(captured[0].systemPrompt, /current test framework: cypress/);
+});
+
+test("Roadmap #19.5B: a synthetic non-Cypress context reaches the actual provider systemPrompt through the SAME generic core - not Playwright support, only identity threading", async () => {
+  const syntheticFrameworkContext = { ...context, metadata: { ...context.metadata, framework: "playwright" } };
+  const { provider, captured } = capturingProvider();
+  const report = await buildFailureReport(syntheticFrameworkContext, { provider, history: null, relevantKnowledge: [] });
+
+  assert.match(captured[0].systemPrompt, /current test framework: playwright/);
+  assert.doesNotMatch(captured[0].systemPrompt, /current test framework: cypress/);
+  assert.equal(report.sourceContext.framework, "playwright");
+});
+
+test("Roadmap #19.5B: the actual provider userPrompt metadata carries framework when present, and never the internal project namespace id", async () => {
+  const cypressContext = {
+    ...context,
+    metadata: { ...context.metadata, framework: "cypress", projectId: "external-poi-sut" },
+  };
+  const { provider, captured } = capturingProvider();
+  await buildFailureReport(cypressContext, { provider, history: null, relevantKnowledge: [] });
+
+  const payload = JSON.parse(captured[0].userPrompt.slice(captured[0].userPrompt.indexOf("{"), captured[0].userPrompt.lastIndexOf("}") + 1));
+  assert.equal(payload.metadata.framework, "cypress");
+  assert.equal(captured[0].userPrompt.includes('"projectId"'), false);
+});
+
+test("Roadmap #19.5B: framework identity is orthogonal to ProjectProfile - changing only frameworkId leaves project identity, displayName, constraints, and report provenance untouched", async () => {
+  const profile = { id: "orthogonality-project", displayName: "ORTHOGONALITY_DISPLAY_SENTINEL", knownProjectConstraints: ["ORTHOGONALITY_CONSTRAINT_SENTINEL"] };
+  const cypressContext = {
+    ...context,
+    metadata: { ...context.metadata, framework: "cypress", projectId: profile.id },
+    knownProjectConstraints: profile.knownProjectConstraints,
+  };
+  const playwrightContext = {
+    ...context,
+    metadata: { ...context.metadata, framework: "playwright", projectId: profile.id },
+    knownProjectConstraints: profile.knownProjectConstraints,
+  };
+
+  const runA = capturingProvider();
+  const runB = capturingProvider();
+  const reportA = await buildFailureReport(cypressContext, { provider: runA.provider, projectProfile: profile, history: null, relevantKnowledge: [] });
+  const reportB = await buildFailureReport(playwrightContext, { provider: runB.provider, projectProfile: profile, history: null, relevantKnowledge: [] });
+
+  assert.match(runA.captured[0].systemPrompt, /ORTHOGONALITY_DISPLAY_SENTINEL/);
+  assert.match(runB.captured[0].systemPrompt, /ORTHOGONALITY_DISPLAY_SENTINEL/);
+  assert.equal(reportA.sourceContext.projectId, profile.id);
+  assert.equal(reportB.sourceContext.projectId, profile.id);
+  assert.equal(reportA.sourceContext.framework, "cypress");
+  assert.equal(reportB.sourceContext.framework, "playwright");
+});
+
+// --- Roadmap #19.5B independent-review correction: cross-channel identity --
+// A raw, unvalidated context.metadata.framework used to reach the actual
+// provider-visible systemPrompt/userPrompt and report.sourceContext.framework
+// verbatim, disagreeing with the normalized identity Knowledge actually used
+// for eligibility - and a present-but-malformed value rendered literal
+// garbage (e.g. "[object Object]") inside the persona sentence. These tests
+// prove every channel now represents one coherent canonical identity.
+
+test("Roadmap #19.5B correction: a canonical framework value with incidental whitespace/casing is normalized identically in the actual systemPrompt, userPrompt, and report - matching what Knowledge would treat as canonical", async () => {
+  const rawContext = { ...context, metadata: { ...context.metadata, framework: " PlayWright " } };
+  const { provider, captured } = capturingProvider();
+  const report = await buildFailureReport(rawContext, { provider, history: null, relevantKnowledge: [] });
+
+  assert.match(captured[0].systemPrompt, /current test framework: playwright\)/);
+  assert.doesNotMatch(captured[0].systemPrompt, /PlayWright/);
+  const payload = JSON.parse(captured[0].userPrompt.slice(captured[0].userPrompt.indexOf("{"), captured[0].userPrompt.lastIndexOf("}") + 1));
+  assert.equal(payload.metadata.framework, "playwright");
+  assert.equal(report.sourceContext.framework, "playwright");
+});
+
+test("Roadmap #19.5B correction: a present-but-malformed canonical framework never leaks raw into the actual systemPrompt/userPrompt/report - it renders the deterministic 'unknown' label in the prompt, is entirely absent from userPrompt metadata, and is null in report provenance", async () => {
+  for (const malformed of [null, "", "   ", 123, {}, []]) {
+    const malformedContext = { ...context, metadata: { ...context.metadata, framework: malformed } };
+    const { provider, captured } = capturingProvider();
+    const report = await buildFailureReport(malformedContext, { provider, history: null, relevantKnowledge: [] });
+
+    assert.match(captured[0].systemPrompt, /current test framework: unknown\)/, `expected 'unknown' for ${JSON.stringify(malformed)}`);
+    assert.doesNotMatch(captured[0].systemPrompt, /\[object Object\]/, `must never render [object Object] for ${JSON.stringify(malformed)}`);
+    assert.equal(captured[0].userPrompt.includes('"framework"'), false, `framework key must be entirely absent from userPrompt for ${JSON.stringify(malformed)}`);
+    assert.equal(report.sourceContext.framework, null, `expected null report provenance for ${JSON.stringify(malformed)}`);
+  }
+});
+
+test("Roadmap #19.5B correction: INVALID present framework ('unknown') is deterministically distinct from ABSENT framework (legacy 'cypress' default) - never silently conflated", async () => {
+  const invalidContext = { ...context, metadata: { ...context.metadata, framework: "   " } };
+  const absentContext = { ...context, metadata: { ...context.metadata } };
+
+  const invalidRun = capturingProvider();
+  const absentRun = capturingProvider();
+  await buildFailureReport(invalidContext, { provider: invalidRun.provider, history: null, relevantKnowledge: [] });
+  await buildFailureReport(absentContext, { provider: absentRun.provider, history: null, relevantKnowledge: [] });
+
+  assert.match(invalidRun.captured[0].systemPrompt, /current test framework: unknown\)/);
+  assert.match(absentRun.captured[0].systemPrompt, /current test framework: cypress\)/);
+  assert.notEqual(invalidRun.captured[0].systemPrompt, absentRun.captured[0].systemPrompt);
+});

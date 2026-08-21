@@ -16,16 +16,19 @@ const SYNTHETIC_PROJECT_PROFILE = {
   knownProjectConstraints: ["Synthetic project constraint."],
 };
 
-// Pins the exact historical sentence, not just a substring match - this
-// is the specific claim Roadmap #19.2 makes (production prompt output is
-// byte-for-byte unchanged by moving project identity into ProjectProfile),
-// so the regression guard should be exact, not merely "close enough".
+// Pins the exact current default sentence, not just a substring match -
+// Roadmap #19.2's original claim (byte-for-byte-unchanged production
+// output) was intentionally superseded by Roadmap #19.5B, which
+// deliberately generalized the persona away from a hardcoded "Cypress"
+// noun and interpolated an explicit, defaulted frameworkId instead (see
+// buildSystemPrompt()'s own doc comment) - this pins the new, equally
+// exact, current production-default sentence.
 const EXACT_PRODUCTION_PERSONA_SENTENCE =
-  "You are a Senior QA Automation Engineer performing failure triage for a Cypress end-to-end suite that tests a live, externally hosted third-party application (poi.targomo.com). The test suite does not control that application's code, infrastructure, or uptime.";
+  "You are a Senior QA Automation Engineer performing failure triage for an end-to-end test suite (current test framework: cypress) that tests a live, externally hosted third-party application (poi.targomo.com). The test suite does not control that application's code, infrastructure, or uptime.";
 
-test("buildSystemPrompt: default (no argument) renders the exact, byte-for-byte historical Targomo persona sentence", () => {
+test("buildSystemPrompt: default (no arguments) renders the exact, byte-for-byte current production persona sentence", () => {
   const prompt = buildSystemPrompt();
-  assert.ok(prompt.startsWith(EXACT_PRODUCTION_PERSONA_SENTENCE), "persona sentence must be byte-identical to the pre-#19.2 hardcoded text");
+  assert.ok(prompt.startsWith(EXACT_PRODUCTION_PERSONA_SENTENCE), "persona sentence must be byte-identical to the current production text");
 });
 
 test("buildSystemPrompt: an explicit Targomo profile argument renders identically to the default", () => {
@@ -39,9 +42,34 @@ test("buildSystemPrompt: a synthetic second project renders its own identity and
   assert.doesNotMatch(prompt, /Targomo/i);
 });
 
-test("buildSystemPrompt: framework wording ('Cypress') is intentionally unchanged regardless of project profile - framework portability is a separate, later stage", () => {
-  assert.match(buildSystemPrompt(SYNTHETIC_PROJECT_PROFILE), /Cypress end-to-end suite/);
-  assert.match(buildSystemPrompt(), /Cypress end-to-end suite/);
+// --- Roadmap #19.5B: frameworkId parameterization --------------------------
+
+test("buildSystemPrompt: omitting frameworkId defaults to 'cypress', matching current production behavior, regardless of project profile", () => {
+  assert.match(buildSystemPrompt(), /current test framework: cypress/);
+  assert.match(buildSystemPrompt(SYNTHETIC_PROJECT_PROFILE), /current test framework: cypress/);
+});
+
+test("buildSystemPrompt: an explicit frameworkId overrides the default and is supplied purely as data - no framework-specific branching", () => {
+  const prompt = buildSystemPrompt(TARGOMO_PROJECT_PROFILE, "playwright");
+  assert.match(prompt, /current test framework: playwright/);
+  assert.doesNotMatch(prompt, /current test framework: cypress/);
+});
+
+test("buildSystemPrompt: the persona no longer hardcodes 'Cypress' as an unconditional noun - it appears only via the (now-defaulted) frameworkId interpolation", () => {
+  const cypressDefault = buildSystemPrompt();
+  const personaLine = cypressDefault.slice(0, cypressDefault.indexOf("\n"));
+  assert.doesNotMatch(personaLine, /Cypress end-to-end suite/i, "the old hardcoded phrase must be gone");
+  assert.match(personaLine, /current test framework: cypress/);
+});
+
+test("buildSystemPrompt: swapping frameworkId changes only the persona sentence - every generic rule stays byte-identical", () => {
+  const cypressPrompt = buildSystemPrompt(TARGOMO_PROJECT_PROFILE, "cypress");
+  const playwrightPrompt = buildSystemPrompt(TARGOMO_PROJECT_PROFILE, "playwright");
+
+  const afterPersonaCypress = cypressPrompt.slice(cypressPrompt.indexOf("For each failed test"));
+  const afterPersonaPlaywright = playwrightPrompt.slice(playwrightPrompt.indexOf("For each failed test"));
+
+  assert.equal(afterPersonaCypress, afterPersonaPlaywright);
 });
 
 test("buildSystemPrompt: swapping projectProfile changes only the persona sentence - every generic rule (grounding, injection defense, output contract) is byte-identical", () => {
@@ -674,6 +702,19 @@ test("buildUserPrompt: repository and runId are excluded too - not because they'
   assert.equal(Object.prototype.hasOwnProperty.call(payload.metadata, "runId"), false);
 });
 
+test("Roadmap #19.5B: framework is LLM-visible when present on metadata, unlike the internal project namespace id", () => {
+  const context = { metadata: { ...REALISTIC_METADATA, framework: "cypress" }, testResults: {}, failedTests: [], relevantFiles: {} };
+  const payload = parsePromptPayload(buildUserPrompt(context));
+  assert.equal(payload.metadata.framework, "cypress");
+  assert.equal(Object.prototype.hasOwnProperty.call(payload.metadata, "projectId"), false);
+});
+
+test("Roadmap #19.5B: framework is absent (not merely empty/null) from the prompt for a legacy context that never set it", () => {
+  const context = { metadata: REALISTIC_METADATA, testResults: {}, failedTests: [], relevantFiles: {} };
+  const payload = parsePromptPayload(buildUserPrompt(context));
+  assert.equal(Object.prototype.hasOwnProperty.call(payload.metadata, "framework"), false);
+});
+
 test("buildUserPrompt: every genuinely operational metadata field named by rule 5 (browser, CI, commit, branch, event) is preserved", () => {
   const context = { metadata: REALISTIC_METADATA, testResults: {}, failedTests: [], relevantFiles: {} };
   const payload = parsePromptPayload(buildUserPrompt(context));
@@ -711,4 +752,30 @@ test("pickPromptMetadata: only copies own properties - an allowlisted key reacha
   metadata.commit = "OWN_COMMIT_VALUE";
 
   assert.deepEqual(pickPromptMetadata(metadata), { commit: "OWN_COMMIT_VALUE" });
+});
+
+// --- Roadmap #19.5B independent-review correction: framework value validation ---
+// Unlike browser/ci/commit/branch/event (passed through as-is), `framework`
+// carries declared FrameworkId semantics (trim + lowercase) that must be
+// enforced here too, or a malformed value would reach the model as literal
+// garbage and a validly-cased/spaced value would disagree with what
+// Knowledge actually used for eligibility.
+
+test("pickPromptMetadata: a valid framework value is normalized (trim + lowercase), matching Knowledge's own FrameworkId semantics", () => {
+  assert.deepEqual(pickPromptMetadata({ framework: " PlayWright " }), { framework: "playwright" });
+  assert.deepEqual(pickPromptMetadata({ framework: "cypress" }), { framework: "cypress" });
+});
+
+test("pickPromptMetadata: a present-but-malformed framework value is excluded entirely, never passed through as raw garbage", () => {
+  for (const malformed of [null, "", "   ", 123, {}, []]) {
+    assert.deepEqual(pickPromptMetadata({ framework: malformed }), {}, `expected framework excluded for ${JSON.stringify(malformed)}`);
+  }
+});
+
+test("pickPromptMetadata: framework normalization does not affect the other allowlisted fields", () => {
+  assert.deepEqual(pickPromptMetadata({ framework: " Cypress ", browser: "firefox", ci: true }), {
+    framework: "cypress",
+    browser: "firefox",
+    ci: true,
+  });
 });
