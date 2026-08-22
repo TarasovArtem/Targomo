@@ -73,7 +73,7 @@ rm -rf reports cypress/screenshots cypress/videos
 set +e
 npx cypress run --spec "$SPEC" --headless --browser firefox >"${FORENSICS_ROOT}/same-runner-repeat.log" 2>&1
 REPEAT_CODE=$?
-set -e
+set +e
 cat "${FORENSICS_ROOT}/same-runner-repeat.log"
 mkdir -p "${FORENSICS_ROOT}/same-runner-repeat"
 cp "${FORENSICS_ROOT}/same-runner-repeat.log" "${FORENSICS_ROOT}/same-runner-repeat/terminal.log" 2>/dev/null || true
@@ -94,7 +94,7 @@ rm -rf reports cypress/screenshots cypress/videos
 set +e
 npx cypress run --spec "$SPEC" --headless --browser firefox --config requestTimeout=15000 >"${FORENSICS_ROOT}/request-timeout-15s.log" 2>&1
 TIMEOUT_CODE=$?
-set -e
+set +e
 cat "${FORENSICS_ROOT}/request-timeout-15s.log"
 mkdir -p "${FORENSICS_ROOT}/request-timeout-15s"
 cp "${FORENSICS_ROOT}/request-timeout-15s.log" "${FORENSICS_ROOT}/request-timeout-15s/terminal.log" 2>/dev/null || true
@@ -178,7 +178,7 @@ rm -rf reports cypress/screenshots cypress/videos
 set +e
 npx cypress run --spec "${TRACE_SPEC}" --headless --browser firefox >"${FORENSICS_ROOT}/resource-trace/terminal.log" 2>&1
 TRACE_RUN_CODE=$?
-set -e
+set +e
 cat "${FORENSICS_ROOT}/resource-trace/terminal.log"
 echo "resource_trace_run_exit_code=${TRACE_RUN_CODE}" >>"${FORENSICS_ROOT}/metadata/original-result.txt"
 
