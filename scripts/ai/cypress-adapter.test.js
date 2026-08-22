@@ -225,7 +225,14 @@ test("summarizeTestResults: aggregates totals across multiple spec reports", () 
 test("resolveScreenshotPath: matches only the exact '(failed)' filename, never a same-prefix guess", (t) => {
   const specDir = path.join(ROOT, "cypress", "screenshots", "fixture.cy.js");
   fs.mkdirSync(specDir, { recursive: true });
-  t.after(() => fs.rmSync(path.join(ROOT, "cypress", "screenshots"), { recursive: true, force: true }));
+  // Roadmap #19.7H-B: resolveScreenshotPath() only ever reads its own
+  // spec-named subdirectory (see the adapter's own implementation), never
+  // sibling content - so cleanup is scoped to exactly this test's own
+  // "fixture.cy.js" subdirectory, never the shared cypress/screenshots/
+  // parent, which other concurrently-running test files (e.g.
+  // cypress-equivalence.test.js's s1_mixed.cy.js/s5_screens.cy.js) may be
+  // using at the same time.
+  t.after(() => fs.rmSync(specDir, { recursive: true, force: true }));
 
   // A screenshot for an unrelated test whose title happens to start the
   // same way as ours - must never be picked up by a loose prefix match.
@@ -243,7 +250,9 @@ test("resolveScreenshotPath: matches only the exact '(failed)' filename, never a
 test("resolveScreenshotPath: with multiple attempts, picks the highest-numbered one", (t) => {
   const specDir = path.join(ROOT, "cypress", "screenshots", "fixture2.cy.js");
   fs.mkdirSync(specDir, { recursive: true });
-  t.after(() => fs.rmSync(path.join(ROOT, "cypress", "screenshots"), { recursive: true, force: true }));
+  // Roadmap #19.7H-B: same scoped-cleanup reasoning as the test above -
+  // this test owns only its own "fixture2.cy.js" subdirectory.
+  t.after(() => fs.rmSync(specDir, { recursive: true, force: true }));
 
   fs.writeFileSync(path.join(specDir, "Suite -- flaky test (failed) (1).png"), "");
   fs.writeFileSync(path.join(specDir, "Suite -- flaky test (failed) (2).png"), "");
@@ -269,22 +278,35 @@ test("resolveScreenshotPath: an overridden screenshotsDir is honored without tou
 
 // --- loadReports (moved from collect-context.test.js) ------------------
 
+// Roadmap #19.7H-B: unlike resolveScreenshotPath (scoped to one spec
+// subdirectory), loadReports(reportsDir) reads its ENTIRE directory's
+// contents as one atomic unit - two test files both exercising the real
+// canonical reports/cypress default (this one, and collect-context.test.js's
+// own real-path main() tests, which already document themselves as the
+// sole intended owner of that exact pattern) cannot safely share it, no
+// matter how uniquely either names its own fixture files, because
+// loadReports() would see the OTHER file's fixtures too. The warning-text
+// algorithm under test here is identical regardless of which directory is
+// passed in, so these two tests use an isolated temp root via the
+// existing `reportsDir` override - collect-context.test.js remains the
+// sole test file that exercises the literal default-parameter/real-path
+// wiring end to end.
 test("loadReports: reports a clear warning and returns no reports when reports/cypress is missing", (t) => {
-  fs.rmSync(path.join(ROOT, "reports"), { recursive: true, force: true });
-  t.after(() => fs.rmSync(path.join(ROOT, "reports"), { recursive: true, force: true }));
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cypress-adapter-reports-missing-"));
+  fs.rmSync(tmpRoot, { recursive: true, force: true }); // directory itself must not exist
+  t.after(() => fs.rmSync(tmpRoot, { recursive: true, force: true }));
 
-  const { reports, warnings } = loadReports();
+  const { reports, warnings } = loadReports(tmpRoot);
   assert.equal(reports.length, 0);
   assert.ok(warnings.some((w) => w.includes("No report directory")));
 });
 
 test("loadReports: skips an unparseable JSON file with a warning instead of throwing", (t) => {
-  const reportsDir = path.join(ROOT, "reports", "cypress");
-  fs.mkdirSync(reportsDir, { recursive: true });
-  fs.writeFileSync(path.join(reportsDir, "broken.json"), "{ not json");
-  t.after(() => fs.rmSync(path.join(ROOT, "reports"), { recursive: true, force: true }));
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "cypress-adapter-reports-broken-"));
+  t.after(() => fs.rmSync(tmpRoot, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(tmpRoot, "broken.json"), "{ not json");
 
-  const { reports, warnings } = loadReports();
+  const { reports, warnings } = loadReports(tmpRoot);
   assert.equal(reports.length, 0);
   assert.ok(warnings.some((w) => w.includes("Could not parse")));
 });

@@ -433,8 +433,8 @@ test("runProviderAnalysis: a non-empty response containing malformed QA JSON sti
 });
 
 test("readHistory: returns null when reports/ai/history.json doesn't exist", (t) => {
-  fs.rmSync(path.dirname(HISTORY_FILE), { recursive: true, force: true });
-  t.after(() => fs.rmSync(path.dirname(HISTORY_FILE), { recursive: true, force: true }));
+  fs.rmSync(HISTORY_FILE, { force: true });
+  t.after(() => fs.rmSync(HISTORY_FILE, { force: true }));
 
   assert.equal(readHistory(), null);
 });
@@ -442,7 +442,7 @@ test("readHistory: returns null when reports/ai/history.json doesn't exist", (t)
 test("readHistory: returns null when history.json is marked unavailable", (t) => {
   fs.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true });
   fs.writeFileSync(HISTORY_FILE, JSON.stringify({ available: false, reason: "no prior runs" }));
-  t.after(() => fs.rmSync(path.dirname(HISTORY_FILE), { recursive: true, force: true }));
+  t.after(() => fs.rmSync(HISTORY_FILE, { force: true }));
 
   assert.equal(readHistory(), null);
 });
@@ -450,7 +450,7 @@ test("readHistory: returns null when history.json is marked unavailable", (t) =>
 test("readHistory: returns null for unparseable JSON instead of throwing", (t) => {
   fs.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true });
   fs.writeFileSync(HISTORY_FILE, "{ not json");
-  t.after(() => fs.rmSync(path.dirname(HISTORY_FILE), { recursive: true, force: true }));
+  t.after(() => fs.rmSync(HISTORY_FILE, { force: true }));
 
   assert.doesNotThrow(() => readHistory());
   assert.equal(readHistory(), null);
@@ -471,7 +471,7 @@ test("readHistory: strips internal bookkeeping fields, keeping only the compact 
       generatedAt: "2026-01-01T00:00:00.000Z",
     })
   );
-  t.after(() => fs.rmSync(path.dirname(HISTORY_FILE), { recursive: true, force: true }));
+  t.after(() => fs.rmSync(HISTORY_FILE, { force: true }));
 
   assert.deepEqual(readHistory(), { runsConsidered: 10, passes: 7, failures: 3, retryPasses: 2 });
 });
@@ -533,7 +533,7 @@ test("isHistoryProjectEligible: full state-combination matrix", () => {
 function writeHistoryFixture(t, historyObject) {
   fs.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true });
   fs.writeFileSync(HISTORY_FILE, JSON.stringify(historyObject));
-  t.after(() => fs.rmSync(path.dirname(HISTORY_FILE), { recursive: true, force: true }));
+  t.after(() => fs.rmSync(HISTORY_FILE, { force: true }));
 }
 
 const VALID_AGGREGATE_FIELDS = { runsConsidered: 10, passes: 7, failures: 3, retryPasses: 2, generatedAt: "2026-01-01T00:00:00.000Z" };
