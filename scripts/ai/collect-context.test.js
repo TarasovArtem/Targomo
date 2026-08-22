@@ -17,23 +17,26 @@ const { normalizeSpecPath } = require("./context-utils");
 
 const ROOT = path.resolve(__dirname, "..", "..");
 
-// Roadmap #19.7C (independent review finding): this file's real-path
-// tests share reports/ with cypress-adapter.test.js's own real-path
-// tests and analyze-failure.test.js's reports/ai/history.json tests -
-// separate test files that Node's test runner may execute as
-// concurrent processes by default. That pre-existing, cross-file
-// filesystem race (not introduced or meaningfully worsened by #19.7 -
-// confirmed via isolated A/B stress testing during review) can produce
-// a transient ENOTEMPTY/EBUSY on this exact rmSync call. Node's own
-// built-in retry (maxRetries/retryDelay, available since Node 14.14)
-// is the standard mitigation for exactly this class of transient error
-// and meaningfully reduces (though cannot, by itself, fully eliminate,
-// since the root cause spans files outside this one) this file's own
-// contribution to that pre-existing race. Fully eliminating the race
-// would require changes to cypress-adapter.test.js/analyze-failure.test.js
-// and/or package.json test:unit concurrency, both out of #19.7's scope.
-function rmReportsTree() {
-  fs.rmSync(path.join(ROOT, "reports"), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+// Roadmap #19.7H-B (structural fix, supersedes the #19.7C retry-based
+// mitigation this function used to apply): this file's real-path tests
+// invoke the real main() (via collect-context.js -> cypress-adapter.js)
+// against the true canonical reports/cypress and reports/ai/context.json
+// paths - that is the deliberate point of these specific tests (see the
+// module comment above each one), and this file is the sole test file
+// that exercises that literal default-parameter wiring end to end.
+// reports/cypress is exclusively owned by this file's own tests now -
+// cypress-adapter.test.js's own default-path tests were moved to isolated
+// temp roots specifically so no other test file touches this directory
+// (see cypress-adapter.test.js's own #19.7H-B comments). reports/ai is
+// shared with analyze-failure.test.js, which now cleans only its own
+// exact reports/ai/history.json file - so removing only this file's own
+// reports/ai/context.json (never the reports/ai/ directory itself) cannot
+// collide with it either. With no remaining shared-parent deletion, the
+// #19.7C retry (which existed only to reduce, not eliminate, that
+// cross-file race) is no longer needed.
+function cleanOwnedReportPaths() {
+  fs.rmSync(path.join(ROOT, "reports", "cypress"), { recursive: true, force: true });
+  fs.rmSync(path.join(ROOT, "reports", "ai", "context.json"), { force: true });
 }
 
 test("isPathAllowed: allows cypress/ files and the two named root files", () => {
@@ -157,8 +160,8 @@ test("collect-context.js no longer exports its own KNOWN_PROJECT_CONSTRAINTS (ow
 test("main(): writes context.json whose testResults/failedTests/warnings/metadata.framework come from the real Cypress adapter", (t) => {
   const reportsDir = path.join(ROOT, "reports", "cypress");
   const outputFile = path.join(ROOT, "reports", "ai", "context.json");
-  rmReportsTree();
-  t.after(() => rmReportsTree());
+  cleanOwnedReportPaths();
+  t.after(() => cleanOwnedReportPaths());
 
   fs.mkdirSync(reportsDir, { recursive: true });
   fs.writeFileSync(
@@ -298,8 +301,8 @@ function projectFullContext(ctx) {
 test("S1 full-context: current collector wiring matches the historical oracle's full projected context (metadata/testResults/failedTests/relevantFiles/constraints/warnings)", (t) => {
   const reportsDir = path.join(ROOT, "reports", "cypress");
   const outputFile = path.join(ROOT, "reports", "ai", "context.json");
-  rmReportsTree();
-  t.after(() => rmReportsTree());
+  cleanOwnedReportPaths();
+  t.after(() => cleanOwnedReportPaths());
 
   fs.mkdirSync(reportsDir, { recursive: true });
   fs.writeFileSync(
@@ -381,8 +384,8 @@ test("S1 full-context: current collector wiring matches the historical oracle's 
 test("S11 warning merge order: current collector wiring matches the historical oracle - adapter warning before generic relevantFiles warning", (t) => {
   const reportsDir = path.join(ROOT, "reports", "cypress");
   const outputFile = path.join(ROOT, "reports", "ai", "context.json");
-  rmReportsTree();
-  t.after(() => rmReportsTree());
+  cleanOwnedReportPaths();
+  t.after(() => cleanOwnedReportPaths());
 
   fs.mkdirSync(reportsDir, { recursive: true });
   // An adapter/artifact warning (malformed JSON, never parsed) alongside
