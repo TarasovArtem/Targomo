@@ -320,6 +320,35 @@ jobs:
         with:
           firefox-version: latest
 
+      # TEMPORARY - Roadmap #19.7F-B4B (Firefox stability investigation).
+      # Runs on every Firefox job, pass or fail, before the original test
+      # execution below - read-only safe metadata capture only, never
+      # touches reports/cypress, cypress/screenshots, or cypress/videos, so
+      # it cannot affect anything the original run or its existing
+      # diagnostics steps read/write. Fixes the historical gap (#19.7F-B4A)
+      # where runner ImageOS/ImageVersion and exact Firefox/Cypress versions
+      # were never captured on production runs. Removal: delete this step
+      # once Firefox root cause is captured/confirmed or the investigation
+      # is explicitly closed.
+      - name: Capture Firefox runtime metadata (temporary, #19.7F-B4B)
+        if: always()
+        run: |
+          echo "=== #19.7F-B4B temporary runtime metadata (safe subset only) ==="
+          date -u +"%Y-%m-%dT%H:%M:%SZ"
+          echo "ImageOS=${ImageOS:-<unset>}"
+          echo "ImageVersion=${ImageVersion:-<unset>}"
+          echo "RUNNER_OS=${RUNNER_OS:-<unset>}"
+          echo "RUNNER_ARCH=${RUNNER_ARCH:-<unset>}"
+          uname -a
+          node --version
+          npm --version
+          npx cypress version
+          firefox --version
+          which firefox
+          free -m
+          df -h /dev/shm || true
+          uptime
+
       # Identical contract to cypress-tests' own "Run Cypress E2E tests"
       # step: continue-on-error lets the job carry on into the diagnostics
       # steps below instead of stopping here; steps.run_tests.outcome (not
@@ -328,6 +357,11 @@ jobs:
       # filtering, no Firefox-specific flags - this is the exact same
       # "firefox" script chrome/edge's own npm run ${{ matrix.browser }}
       # would use if it were still in that matrix.
+      #
+      # UNCHANGED by #19.7F-B4B: same id, same continue-on-error, same
+      # command, same semantics as before this roadmap stage. This step's
+      # own outcome is the sole authority for the job's pass/fail result -
+      # nothing added below this file in #19.7F-B4B can alter that.
       - name: Run Cypress E2E tests (firefox)
         id: run_tests
         continue-on-error: true
@@ -402,6 +436,46 @@ jobs:
         run: |
           echo "Cypress E2E tests failed for browser 'firefox'. See the report/screenshot/video artifacts (and QA AI triage, if it runs) for details."
           exit 1
+
+      # TEMPORARY - Roadmap #19.7F-B4B (Firefox stability investigation).
+      # Placed deliberately LAST, after every existing step in this job
+      # (including "Fail job on E2E failure" above) so that by the time
+      # this runs, the ORIGINAL run's reports/cypress, cypress/screenshots,
+      # and cypress/videos have already been fully consumed by the
+      # unchanged "Collect structured failure context" (ai:collect),
+      # "Upload Cypress screenshots", "Upload structured test report", and
+      # "Upload Cypress videos" steps above - so nothing this step does can
+      # collide with or corrupt the existing AI-triage input or artifact
+      # pipeline. Only runs when the ORIGINAL npm run firefox execution
+      # already failed; that result is already final by this point and
+      # cannot be changed by anything below. continue-on-error: true is
+      # redundant with the script's own unconditional `exit 0` but stated
+      # explicitly so a reviewer never has to wonder whether a forensic
+      # script bug could mask or alter the real result.
+      #
+      # Removal: delete this step, the next step, and
+      # scripts/diagnostics/firefox-failure-forensics.sh once Firefox root
+      # cause is captured/confirmed or the investigation is explicitly
+      # closed (see README/roadmap #19.7F-B4A/#19.7F-B4B).
+      - name: Preserve and analyze Firefox failure evidence (temporary, #19.7F-B4B)
+        if: steps.run_tests.outcome == 'failure'
+        continue-on-error: true
+        run: bash scripts/diagnostics/firefox-failure-forensics.sh
+
+      # Separate, distinctly-named artifact - never read by qa-ai-triage
+      # (which only downloads qa-triage-input-chrome/edge/firefox) and never
+      # overlapping reports/ai/*, so this cannot introduce an extra browser
+      # failure signal or an extra AI provider call. Short retention because
+      # this is temporary debugging output, not a permanent record.
+      - name: Upload Firefox forensics artifact (temporary, #19.7F-B4B)
+        if: steps.run_tests.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: firefox-forensics
+          path: reports/firefox-forensics
+          if-no-files-found: ignore
+          retention-days: 7
 
   # Runs downstream of the full Cypress matrix (chrome, edge, and - since
   # Roadmap #14C - firefox), at most once per workflow run - the whole
