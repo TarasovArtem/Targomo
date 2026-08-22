@@ -330,7 +330,7 @@ jobs:
       # were never captured on production runs. Removal: delete this step
       # once Firefox root cause is captured/confirmed or the investigation
       # is explicitly closed.
-      - name: Capture Firefox runtime metadata (temporary, #19.7F-B4B)
+      - name: "Capture Firefox runtime metadata (temporary, #19.7F-B4B)"
         if: always()
         run: |
           echo "=== #19.7F-B4B temporary runtime metadata (safe subset only) ==="
@@ -468,7 +468,7 @@ jobs:
       # when it's needed. `always()` overrides that implicit gating so the
       # explicit outcome check below is what actually decides whether this
       # runs - independent review #19.7F-B4B-R found and confirmed this.
-      - name: Preserve and analyze Firefox failure evidence (temporary, #19.7F-B4B)
+      - name: "Preserve and analyze Firefox failure evidence (temporary, #19.7F-B4B)"
         if: always() && steps.run_tests.outcome == 'failure'
         continue-on-error: true
         run: bash scripts/diagnostics/firefox-failure-forensics.sh
@@ -482,7 +482,7 @@ jobs:
       # #19.7F-B4B-FIX: same implicit-success() reasoning as the step above -
       # `always()` is required or this upload is silently skipped whenever
       # the job has already failed, which is precisely when it must run.
-      - name: Upload Firefox forensics artifact (temporary, #19.7F-B4B)
+      - name: "Upload Firefox forensics artifact (temporary, #19.7F-B4B)"
         if: always() && steps.run_tests.outcome == 'failure'
         continue-on-error: true
         uses: actions/upload-artifact@v7
