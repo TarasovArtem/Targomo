@@ -1,10 +1,17 @@
 name: Firefox poiTiles Diagnostic (temporary)
 
-# TEMPORARY DIAGNOSTIC WORKFLOW - Roadmap #19.7F-B2.
+# TEMPORARY DIAGNOSTIC WORKFLOW - Roadmap #19.7F-B2 / #19.7F-B3.
 # Exists only on diagnostic/firefox-poitiles-linux. Not part of the
 # production CI pipeline, never merged to main. No AI/provider path of any
 # kind - no qa-ai-triage job, no ai:collect, no ai:analyze, no GROQ/Gemini
 # secrets referenced anywhere in this file. Manual trigger only.
+#
+# #19.7F-B3: default sampling mode is now ONE baseline attempt per runner
+# (single_shot_mode=true), to maximize independent-runner coverage rather
+# than attempts-per-runner (already thoroughly explored in #19.7F-B2: 48/48
+# clean across 3 runners). On an exact-signature failure the same run
+# automatically performs a bounded forensic follow-up on that same runner
+# before exiting - see scripts/diagnostics/firefox-poitiles-diagnostic.sh.
 
 on:
   # push trigger is scoped ONLY to this diagnostic branch, purely because
@@ -22,9 +29,17 @@ on:
         required: false
         default: "latest"
       max_attempts:
-        description: "Maximum sequential poi_data_requests.cy.js attempts before stopping the baseline loop"
+        description: "Maximum sequential poi_data_requests.cy.js attempts before stopping the baseline loop (ignored when single_shot_mode is true)"
         required: false
-        default: "15"
+        default: "1"
+      single_shot_mode:
+        description: "true = one baseline attempt per runner (default, #19.7F-B3 sampling mode); false = legacy #19.7F-B2 multi-attempt loop using max_attempts"
+        required: false
+        default: "true"
+      run_full_suite_phase:
+        description: "true = also run the 3x full-suite phase after the baseline (legacy #19.7F-B2 behavior); default false to minimize per-runner SUT traffic"
+        required: false
+        default: "false"
 
 permissions:
   contents: read
@@ -101,6 +116,8 @@ jobs:
         id: diagnostic
         env:
           MAX_ATTEMPTS: ${{ github.event.inputs.max_attempts }}
+          SINGLE_SHOT_MODE: ${{ github.event.inputs.single_shot_mode }}
+          RUN_FULL_SUITE_PHASE: ${{ github.event.inputs.run_full_suite_phase }}
         run: bash scripts/diagnostics/firefox-poitiles-diagnostic.sh
 
       - name: Upload diagnostic artifacts
